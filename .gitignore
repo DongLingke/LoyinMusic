@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+build/
+dist/
+*.spec
+*.dmg
+tunenote.db
+AppIcon.iconset/
+.npm-cache/
+.claude/
