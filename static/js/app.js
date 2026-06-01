@@ -45,6 +45,12 @@ const state = {
   activeTagId: null,       // tag view: currently selected tag
   tagTracks: [],           // tracks under the active tag
   taggingTrack: null,      // { kind, id } — track whose tag editor is open
+  playlists: [],
+  activePlaylist: null,    // { playlist, items }
+  historyDate: null,       // 'YYYY-MM-DD' or null → today
+  historyMonth: null,      // Date object for calendar month navigation
+  historyTracks: [],
+  historyDaysWithPlays: new Set(),
 };
 
 // ── Utilities ─────────────────────────────────────────────────────
@@ -64,6 +70,49 @@ function coverUrl(track) {
   if (track.cover_url) return track.cover_url;
   return null;
 }
+// ── LRC lyrics parser (M6) ─────────────────────────────────────
+function parseLrc(lrcText) {
+  if (!lrcText) return [];
+  const lines = [];
+  lrcText.split('\n').forEach(line => {
+    const m = line.match(/^\[(\d{2}):(\d{2})(?:\.(\d{2,3}))?\](.*)/);
+    if (m) {
+      const t = parseInt(m[1]) * 60 + parseInt(m[2]) + (parseInt(m[3] || 0) / (m[3]?.length === 3 ? 1000 : 100));
+      lines.push({ time: t, text: m[4].trim() });
+    }
+  });
+  return lines.sort((a, b) => a.time - b.time);
+}
+
+// ── Cover accent color extraction (M6) ────────────────────────
+function extractAccentFromCover(imgSrc) {
+  if (!imgSrc) return;
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.onload = () => {
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 64;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, 64, 64);
+      const data = ctx.getImageData(0, 0, 64, 64).data;
+      let r = 0, g = 0, b = 0, count = 0;
+      for (let i = 0; i < data.length; i += 16) {
+        const pr = data[i], pg = data[i+1], pb = data[i+2];
+        const sat = Math.max(pr,pg,pb) - Math.min(pr,pg,pb);
+        if (sat > 30) { r += pr; g += pg; b += pb; count++; }
+      }
+      if (count > 0) {
+        r = Math.round(r / count); g = Math.round(g / count); b = Math.round(b / count);
+        document.documentElement.style.setProperty('--accent', `rgb(${r},${g},${b})`);
+        document.documentElement.style.setProperty('--accent-hover', `rgb(${Math.min(r+30,255)},${Math.min(g+30,255)},${Math.min(b+30,255)})`);
+        document.documentElement.style.setProperty('--accent-dim', `rgba(${r},${g},${b},0.15)`);
+      }
+    } catch {}
+  };
+  img.src = imgSrc;
+}
+
 function kindBadge(kind) {
   return kind === 'local'
     ? '<span class="kind-badge local">本地</span>'
@@ -204,9 +253,14 @@ const player = {
       prog.value = (this.audio.currentTime / this.audio.duration) * 100;
       cur.textContent = fmtTimeSec(this.audio.currentTime);
     }
+    this._syncLyrics();
   },
   _updatePlayBtn() { document.getElementById('btn-play').textContent = this.playing ? '⏸' : '▶'; },
+  lyrics: [],      // parsed LRC lines for current track
+  _currentTrack: null,
+
   _updateBar(track) {
+    this._currentTrack = track;
     document.getElementById('player-title').textContent = track.title || '未知曲目';
     document.getElementById('player-artist').textContent = track.artist || '';
     document.getElementById('player-time-dur').textContent = fmtTime(track.duration_ms);
@@ -215,6 +269,74 @@ const player = {
     const coverEl = document.getElementById('player-cover');
     const src = coverUrl(track);
     coverEl.innerHTML = src ? `<img src="${esc(src)}" alt="">` : '';
+    // Now-playing overlay
+    const npCover = document.getElementById('np-cover-lg');
+    npCover.innerHTML = src ? `<img src="${esc(src)}" alt="">` : '';
+    document.getElementById('np-title-lg').textContent = track.title || '未知曲目';
+    document.getElementById('np-artist-lg').textContent = track.artist || '';
+    document.getElementById('np-album-lg').textContent = track.album || '';
+    // Cover accent (M6)
+    extractAccentFromCover(src);
+    // Load lyrics (M6)
+    this.lyrics = [];
+    this._loadLyrics(track);
+    // Load note (M9)
+    this._loadNote(track);
+  },
+
+  async _loadLyrics(track) {
+    let lrc = track.lyric_cache || '';
+    // Try fetching from source sandbox
+    if (!lrc && track.kind === 'online' && track.source && track.source !== 'url' && window.sourceHost) {
+      try {
+        const info = track.source_meta ? JSON.parse(track.source_meta) : { songmid: track.source_id };
+        const result = await window.sourceHost.request(track.source, 'lyric', { musicInfo: info });
+        if (result && typeof result === 'object') lrc = result.lyric || '';
+        else if (typeof result === 'string') lrc = result;
+        // Cache it
+        if (lrc && track.id) api.put(`/online/tracks/${track.id}`, { lyric_cache: lrc });
+      } catch {}
+    }
+    this.lyrics = parseLrc(lrc);
+    this._renderLyrics();
+  },
+
+  _renderLyrics() {
+    const el = document.getElementById('np-lyrics');
+    if (!el) return;
+    if (!this.lyrics.length) {
+      el.innerHTML = '<div style="padding:20px;color:var(--text-tertiary)">暂无歌词</div>';
+      return;
+    }
+    el.innerHTML = this.lyrics.map((l, i) =>
+      `<div class="lyric-line" data-lyric-idx="${i}">${esc(l.text || '···')}</div>`
+    ).join('');
+  },
+
+  _syncLyrics() {
+    if (!this.lyrics.length) return;
+    const el = document.getElementById('np-lyrics');
+    if (!el) return;
+    const t = this.audio.currentTime;
+    let activeIdx = 0;
+    for (let i = this.lyrics.length - 1; i >= 0; i--) {
+      if (this.lyrics[i].time <= t) { activeIdx = i; break; }
+    }
+    el.querySelectorAll('.lyric-line').forEach((line, i) => {
+      const isActive = i === activeIdx;
+      line.classList.toggle('active', isActive);
+      if (isActive) line.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
+  },
+
+  async _loadNote(track) {
+    const el = document.getElementById('np-note');
+    if (!el) return;
+    const kind = track.kind || 'local';
+    try {
+      const d = await api.get(`/tracks/${kind}/${track.id}/note`);
+      el.value = d.note || '';
+    } catch { el.value = ''; }
   },
   _updateMediaSession(track) {
     if (!('mediaSession' in navigator)) return;
@@ -394,6 +516,107 @@ function renderTagsView() {
   return html;
 }
 
+// ── M8: Playlists view ────────────────────────────────────────────
+function renderPlaylistsView() {
+  let html = `<div class="view-header">
+    <div class="view-title">歌单</div>
+    <button class="btn btn-primary" id="btn-add-playlist">+ 新建歌单</button>
+  </div>`;
+
+  if (state.activePlaylist) {
+    const { playlist, items } = state.activePlaylist;
+    html += `<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+      <button class="btn btn-ghost" id="btn-back-playlists">← 返回</button>
+      <span class="view-title" style="font-size:1.2rem">${esc(playlist.name)}</span>
+      <span class="count">(${items.length})</span>
+    </div>`;
+    if (items.length) {
+      html += renderTrackTable(items.map(it => ({
+        ...it, kind: it.track_kind, id: it.track_id,
+      })), true);
+    } else {
+      html += '<div style="padding:20px;color:var(--text-tertiary);text-align:center">歌单为空 — 在其他视图的曲目上右键可添加到歌单</div>';
+    }
+    return html;
+  }
+
+  if (!state.playlists.length) {
+    html += `<div class="empty-state"><div class="empty-icon">📋</div>
+      <div class="empty-text">还没有歌单<br>创建歌单来整理你喜欢的音乐</div></div>`;
+    return html;
+  }
+
+  html += '<div class="playlist-grid">';
+  state.playlists.forEach(p => {
+    html += `<div class="playlist-card" data-act="open-playlist" data-id="${p.id}">
+      <div class="playlist-card-name">${esc(p.name)}</div>
+      <div class="playlist-card-count">${p.item_count || 0} 首</div>
+      <div class="playlist-card-actions">
+        <button class="btn btn-ghost" style="font-size:0.75rem;padding:2px 8px" data-act="rename-playlist" data-id="${p.id}">重命名</button>
+        <button class="btn btn-ghost" style="font-size:0.75rem;padding:2px 8px;color:var(--danger)" data-act="del-playlist" data-id="${p.id}">删除</button>
+      </div>
+    </div>`;
+  });
+  html += '</div>';
+  return html;
+}
+
+// ── M8: History view (calendar + track list) ──────────────────────
+function renderHistoryView() {
+  const now = new Date();
+  const month = state.historyMonth || new Date(now.getFullYear(), now.getMonth(), 1);
+  const y = month.getFullYear(), m = month.getMonth();
+  const daysInMonth = new Date(y, m + 1, 0).getDate();
+  const firstDow = new Date(y, m, 1).getDay(); // 0=Sun
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+  const selectedDate = state.historyDate || todayStr;
+  const monthNames = ['1月','2月','3月','4月','5月','6月','7月','8月','9月','10月','11月','12月'];
+
+  let html = `<div class="view-header"><div class="view-title">播放历史</div></div>`;
+
+  // Calendar nav
+  html += `<div class="cal-nav">
+    <button data-act="cal-prev">◀</button>
+    <div class="cal-nav-title">${y}年 ${monthNames[m]}</div>
+    <button data-act="cal-next">▶</button>
+  </div>`;
+
+  // Calendar grid
+  html += '<div class="history-calendar">';
+  ['日','一','二','三','四','五','六'].forEach(d => {
+    html += `<div class="cal-header">${d}</div>`;
+  });
+  // Empty cells before first day
+  for (let i = 0; i < firstDow; i++) html += '<div class="cal-day empty"></div>';
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${y}-${String(m+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+    const isToday = dateStr === todayStr;
+    const isSelected = dateStr === selectedDate;
+    const hasPlays = state.historyDaysWithPlays.has(dateStr);
+    html += `<div class="cal-day ${isToday ? 'today' : ''} ${isSelected ? 'selected' : ''} ${hasPlays ? 'has-plays' : ''}"
+                  data-act="cal-select" data-date="${dateStr}">${d}</div>`;
+  }
+  html += '</div>';
+
+  // Selected date's tracks
+  html += `<div class="settings-section-title">${selectedDate} 的播放记录</div>`;
+  if (state.historyTracks.length) {
+    html += '<table class="track-table"><thead><tr><th class="td-idx">#</th><th class="td-title">标题</th><th class="td-artist">艺人</th><th class="td-duration">时间</th></tr></thead><tbody>';
+    state.historyTracks.forEach((t, i) => {
+      html += `<tr class="track-row" data-kind="${t.track_kind}" data-id="${t.track_id}">
+        <td class="td-idx">${i + 1}</td>
+        <td class="td-title"><span class="track-name">${esc(t.title || '未知')}</span> ${kindBadge(t.track_kind)}</td>
+        <td class="td-artist">${esc(t.artist || '')}</td>
+        <td class="td-duration">${t.played_at ? t.played_at.split(' ')[1]?.slice(0,5) || '' : ''}</td>
+      </tr>`;
+    });
+    html += '</tbody></table>';
+  } else {
+    html += '<div style="padding:20px;color:var(--text-tertiary);text-align:center">这一天没有播放记录</div>';
+  }
+  return html;
+}
+
 // ── Settings view (M1 + M4 source management) ─────────────────────
 function renderSettingsView() {
   const s = state.settings;
@@ -478,6 +701,25 @@ function renderSettingsView() {
     </div>
   </div>`;
 
+  // M9: Export / Import
+  html += `<div class="settings-section">
+    <div class="settings-section-title">数据备份</div>
+    <div class="settings-group">
+      <div class="settings-row">
+        <div><div class="settings-row-label">导出全部数据</div>
+          <div class="settings-row-sub">下载 JSON 备份文件</div></div>
+        <button class="btn btn-ghost" id="btn-export">导出</button>
+      </div>
+      <div class="settings-row">
+        <div><div class="settings-row-label">导入数据</div>
+          <div class="settings-row-sub" style="color:var(--danger)">会合并到当前数据，请先导出做备份</div></div>
+        <label class="btn btn-ghost" style="cursor:pointer">
+          导入 <input type="file" accept=".json" id="import-file-input" style="display:none">
+        </label>
+      </div>
+    </div>
+  </div>`;
+
   return html;
 }
 
@@ -488,8 +730,10 @@ function render() {
     case 'local':    vc.innerHTML = renderLocalView(); break;
     case 'online':   vc.innerHTML = renderOnlineView(); break;
     case 'tags':     vc.innerHTML = renderTagsView(); break;
-    case 'settings': vc.innerHTML = renderSettingsView(); break;
-    default:         vc.innerHTML = renderLocalView();
+    case 'playlists': vc.innerHTML = renderPlaylistsView(); break;
+    case 'history':   vc.innerHTML = renderHistoryView(); break;
+    case 'settings':  vc.innerHTML = renderSettingsView(); break;
+    default:          vc.innerHTML = renderLocalView();
   }
   bindViewEvents();
 }
@@ -714,6 +958,100 @@ function bindViewEvents() {
       render();
     };
   });
+
+  // ── M9: Export / Import ─────────────────────────────────────────
+  document.getElementById('btn-export')?.addEventListener('click', async () => {
+    const data = await api.get('/export');
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `tunenote-backup-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  document.getElementById('import-file-input')?.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const text = await file.text();
+    try {
+      const data = JSON.parse(text);
+      await api.post('/import', data);
+      alert('导入成功！');
+      location.reload();
+    } catch (err) {
+      alert('导入失败: ' + err.message);
+    }
+  });
+
+  // ── M8: Playlists ──────────────────────────────────────────────
+  document.getElementById('btn-add-playlist')?.addEventListener('click', async () => {
+    const name = prompt('歌单名称');
+    if (!name?.trim()) return;
+    await api.post('/playlists', { name: name.trim() });
+    state.playlists = await api.get('/playlists');
+    render();
+  });
+
+  document.getElementById('btn-back-playlists')?.addEventListener('click', () => {
+    state.activePlaylist = null;
+    render();
+  });
+
+  document.querySelectorAll('[data-act="open-playlist"]').forEach(el => {
+    el.onclick = async (e) => {
+      if (e.target.closest('[data-act="rename-playlist"]') || e.target.closest('[data-act="del-playlist"]')) return;
+      const d = await api.get(`/playlists/${el.dataset.id}`);
+      state.activePlaylist = d;
+      render();
+    };
+  });
+
+  document.querySelectorAll('[data-act="rename-playlist"]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const name = prompt('新名称');
+      if (!name?.trim()) return;
+      await api.put(`/playlists/${btn.dataset.id}`, { name: name.trim() });
+      state.playlists = await api.get('/playlists');
+      render();
+    };
+  });
+
+  document.querySelectorAll('[data-act="del-playlist"]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm('确定删除这个歌单？')) return;
+      await api.del(`/playlists/${btn.dataset.id}`);
+      state.playlists = await api.get('/playlists');
+      state.activePlaylist = null;
+      render();
+    };
+  });
+
+  // ── M8: History calendar ───────────────────────────────────────
+  document.querySelectorAll('[data-act="cal-select"]').forEach(el => {
+    el.onclick = async () => {
+      state.historyDate = el.dataset.date;
+      state.historyTracks = await api.get(`/history?date=${el.dataset.date}&limit=200`);
+      render();
+    };
+  });
+
+  document.querySelector('[data-act="cal-prev"]')?.addEventListener('click', async () => {
+    const cur = state.historyMonth || new Date();
+    state.historyMonth = new Date(cur.getFullYear(), cur.getMonth() - 1, 1);
+    await loadHistoryMonth();
+    render();
+  });
+
+  document.querySelector('[data-act="cal-next"]')?.addEventListener('click', async () => {
+    const cur = state.historyMonth || new Date();
+    state.historyMonth = new Date(cur.getFullYear(), cur.getMonth() + 1, 1);
+    await loadHistoryMonth();
+    render();
+  });
 }
 
 // ── Scan polling ──────────────────────────────────────────────────
@@ -733,6 +1071,40 @@ async function pollScan() {
 }
 
 // ── Navigation ────────────────────────────────────────────────────
+// ── History helpers ───────────────────────────────────────────────
+async function loadHistoryMonth() {
+  // Load all history dates for the month to show dots on the calendar
+  const m = state.historyMonth || new Date();
+  const all = await api.get(`/history?limit=500`);
+  state.historyDaysWithPlays = new Set(
+    all.map(h => h.played_at?.split(' ')[0]).filter(Boolean)
+  );
+}
+
+// ── Now-playing overlay ──────────────────────────────────────────
+function bindNowPlaying() {
+  // Click on player cover or track info → open overlay
+  document.querySelector('.player-track-info')?.addEventListener('click', () => {
+    if (!player._currentTrack) return;
+    document.getElementById('now-playing-overlay').classList.remove('hidden');
+  });
+  document.getElementById('np-close')?.addEventListener('click', () => {
+    document.getElementById('now-playing-overlay').classList.add('hidden');
+  });
+  // Auto-save note on blur
+  const noteEl = document.getElementById('np-note');
+  let _noteTimer = null;
+  noteEl?.addEventListener('input', () => {
+    clearTimeout(_noteTimer);
+    _noteTimer = setTimeout(async () => {
+      const track = player._currentTrack;
+      if (!track) return;
+      const kind = track.kind || 'local';
+      await api.put(`/tracks/${kind}/${track.id}/note`, { note: noteEl.value });
+    }, 1000);
+  });
+}
+
 function bindNav() {
   document.querySelectorAll('.nav-item').forEach(btn => {
     btn.onclick = () => {
@@ -749,19 +1121,28 @@ function bindNav() {
 async function boot() {
   player.init();
   bindNav();
+  bindNowPlaying();
 
-  const [tracks, onlineTracks, tags, settings, sources] = await Promise.all([
+  const [tracks, onlineTracks, tags, settings, sources, playlists] = await Promise.all([
     api.get('/local/tracks'),
     api.get('/online/tracks'),
     api.get('/tags'),
     api.get('/settings'),
     api.get('/sources'),
+    api.get('/playlists'),
   ]);
   state.localTracks = tracks;
   state.onlineTracks = onlineTracks;
   state.tags = tags;
   state.settings = settings;
   state.sources = sources;
+  state.playlists = playlists;
+
+  // Pre-load today's history
+  const today = new Date().toISOString().slice(0, 10);
+  state.historyDate = today;
+  state.historyTracks = await api.get(`/history?date=${today}&limit=200`);
+  await loadHistoryMonth();
 
   render();
 

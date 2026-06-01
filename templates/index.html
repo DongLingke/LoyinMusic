@@ -22,6 +22,12 @@
         <button class="nav-item" data-view="tags">
           <span class="nav-icon">🏷</span><span class="nav-label">标签</span>
         </button>
+        <button class="nav-item" data-view="playlists">
+          <span class="nav-icon">📋</span><span class="nav-label">歌单</span>
+        </button>
+        <button class="nav-item" data-view="history">
+          <span class="nav-icon">📅</span><span class="nav-label">历史</span>
+        </button>
         <button class="nav-item" data-view="settings">
           <span class="nav-icon">⚙</span><span class="nav-label">设置</span>
         </button>
@@ -53,6 +59,21 @@
     </div>
     <div class="player-extra">
       <input type="range" class="volume-slider" id="volume-slider" min="0" max="100" value="80">
+    </div>
+  </div>
+
+  <!-- Fullscreen now-playing / lyrics overlay (M6) -->
+  <div id="now-playing-overlay" class="np-overlay hidden">
+    <button class="np-close" id="np-close">✕</button>
+    <div class="np-cover" id="np-cover-lg"></div>
+    <div class="np-info">
+      <div class="np-title" id="np-title-lg"></div>
+      <div class="np-artist" id="np-artist-lg"></div>
+      <div class="np-album" id="np-album-lg"></div>
+    </div>
+    <div class="np-lyrics" id="np-lyrics"></div>
+    <div class="np-note-area">
+      <textarea class="np-note" id="np-note" placeholder="写点笔记...（自动保存）"></textarea>
     </div>
   </div>
 

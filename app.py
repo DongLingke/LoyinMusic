@@ -807,6 +807,183 @@ def get_source_script(sid):
 
 
 # ---------------------------------------------------------------------------
+# Routes — Playlists (M8)
+# ---------------------------------------------------------------------------
+@app.route('/api/playlists')
+def list_playlists():
+    conn = get_db()
+    rows = conn.execute('SELECT * FROM playlists ORDER BY created_at DESC').fetchall()
+    result = []
+    for r in rows:
+        d = dict(r)
+        d['item_count'] = conn.execute(
+            'SELECT COUNT(*) as n FROM playlist_items WHERE playlist_id=?', (r['id'],)
+        ).fetchone()['n']
+        result.append(d)
+    conn.close()
+    return jsonify(result)
+
+
+@app.route('/api/playlists', methods=['POST'])
+def create_playlist():
+    d = request.json
+    conn = get_db()
+    cur = conn.execute('INSERT INTO playlists (name, kind) VALUES (?,?)',
+                       (d['name'], d.get('kind', 'mixed')))
+    conn.commit()
+    pl = dict(conn.execute('SELECT * FROM playlists WHERE id=?', (cur.lastrowid,)).fetchone())
+    conn.close()
+    return jsonify(pl), 201
+
+
+@app.route('/api/playlists/<int:pid>')
+def get_playlist(pid):
+    conn = get_db()
+    pl = conn.execute('SELECT * FROM playlists WHERE id=?', (pid,)).fetchone()
+    if not pl:
+        conn.close()
+        abort(404)
+    items = conn.execute('''
+        SELECT pi.position, pi.track_kind, pi.track_id,
+               CASE pi.track_kind WHEN 'local' THEN lt.title WHEN 'online' THEN ot.title END as title,
+               CASE pi.track_kind WHEN 'local' THEN lt.artist WHEN 'online' THEN ot.artist END as artist,
+               CASE pi.track_kind WHEN 'local' THEN lt.album WHEN 'online' THEN ot.album END as album,
+               CASE pi.track_kind WHEN 'local' THEN lt.duration_ms WHEN 'online' THEN ot.duration_ms END as duration_ms,
+               CASE pi.track_kind WHEN 'local' THEN lt.cover_hash ELSE NULL END as cover_hash,
+               CASE pi.track_kind WHEN 'online' THEN ot.cover_url ELSE NULL END as cover_url
+        FROM playlist_items pi
+        LEFT JOIN local_tracks lt ON pi.track_kind='local' AND pi.track_id=lt.id
+        LEFT JOIN online_tracks ot ON pi.track_kind='online' AND pi.track_id=ot.id
+        WHERE pi.playlist_id=? ORDER BY pi.position
+    ''', (pid,)).fetchall()
+    conn.close()
+    return jsonify({'playlist': dict(pl), 'items': [dict(i) for i in items]})
+
+
+@app.route('/api/playlists/<int:pid>', methods=['PUT'])
+def update_playlist(pid):
+    d = request.json
+    conn = get_db()
+    if 'name' in d:
+        conn.execute('UPDATE playlists SET name=? WHERE id=?', (d['name'], pid))
+    conn.commit()
+    pl = conn.execute('SELECT * FROM playlists WHERE id=?', (pid,)).fetchone()
+    conn.close()
+    return jsonify(dict(pl)) if pl else abort(404)
+
+
+@app.route('/api/playlists/<int:pid>', methods=['DELETE'])
+def delete_playlist(pid):
+    conn = get_db()
+    conn.execute('DELETE FROM playlists WHERE id=?', (pid,))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/playlists/<int:pid>/items', methods=['PUT'])
+def set_playlist_items(pid):
+    d = request.json
+    items = d.get('items', [])
+    conn = get_db()
+    conn.execute('DELETE FROM playlist_items WHERE playlist_id=?', (pid,))
+    for i, item in enumerate(items):
+        conn.execute('INSERT INTO playlist_items (playlist_id, position, track_kind, track_id) VALUES (?,?,?,?)',
+                     (pid, i, item['track_kind'], item['track_id']))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/playlists/<int:pid>/items', methods=['POST'])
+def add_playlist_item(pid):
+    d = request.json
+    conn = get_db()
+    pos = conn.execute('SELECT COALESCE(MAX(position)+1, 0) as n FROM playlist_items WHERE playlist_id=?',
+                       (pid,)).fetchone()['n']
+    conn.execute('INSERT INTO playlist_items (playlist_id, position, track_kind, track_id) VALUES (?,?,?,?)',
+                 (pid, pos, d['track_kind'], d['track_id']))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True, 'position': pos})
+
+
+# ---------------------------------------------------------------------------
+# Routes — Export / Import (M9)
+# ---------------------------------------------------------------------------
+@app.route('/api/export')
+def export_data():
+    conn = get_db()
+    data = {
+        'local_tracks': [dict(r) for r in conn.execute('SELECT * FROM local_tracks').fetchall()],
+        'online_tracks': [dict(r) for r in conn.execute('SELECT * FROM online_tracks').fetchall()],
+        'tags': [dict(r) for r in conn.execute('SELECT * FROM tags').fetchall()],
+        'track_tags': [dict(r) for r in conn.execute('SELECT * FROM track_tags').fetchall()],
+        'playlists': [dict(r) for r in conn.execute('SELECT * FROM playlists').fetchall()],
+        'playlist_items': [dict(r) for r in conn.execute('SELECT * FROM playlist_items').fetchall()],
+        'play_history': [dict(r) for r in conn.execute('SELECT * FROM play_history').fetchall()],
+        'settings': {r['key']: r['value'] for r in conn.execute('SELECT * FROM settings').fetchall()},
+    }
+    conn.close()
+    return jsonify(data)
+
+
+@app.route('/api/import', methods=['POST'])
+def import_data():
+    d = request.json or {}
+    conn = get_db()
+    # Import online tracks
+    for t in d.get('online_tracks', []):
+        conn.execute('''INSERT OR IGNORE INTO online_tracks
+            (source, source_id, title, artist, album, duration_ms, cover_url, default_quality, url_cache)
+            VALUES (?,?,?,?,?,?,?,?,?)''',
+            (t.get('source','url'), t.get('source_id'), t['title'], t.get('artist',''),
+             t.get('album',''), t.get('duration_ms',0), t.get('cover_url'),
+             t.get('default_quality'), t.get('url_cache','')))
+    # Import tags
+    for t in d.get('tags', []):
+        conn.execute('INSERT OR IGNORE INTO tags (name, color, kind, rule_json) VALUES (?,?,?,?)',
+                     (t['name'], t.get('color',''), t.get('kind','user'), t.get('rule_json')))
+    # Import playlists
+    for p in d.get('playlists', []):
+        conn.execute('INSERT OR IGNORE INTO playlists (name, kind) VALUES (?,?)',
+                     (p['name'], p.get('kind','mixed')))
+    # Import settings
+    for k, v in d.get('settings', {}).items():
+        conn.execute('INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)', (k, str(v)))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+# ---------------------------------------------------------------------------
+# Routes — Song notes / annotations (M9)
+# ---------------------------------------------------------------------------
+@app.route('/api/tracks/<kind>/<int:tid>/note', methods=['GET'])
+def get_track_note(kind, tid):
+    if kind not in ('local','online'):
+        abort(400)
+    conn = get_db()
+    row = conn.execute('SELECT value FROM settings WHERE key=?',
+                       (f'note_{kind}_{tid}',)).fetchone()
+    conn.close()
+    return jsonify({'note': row['value'] if row else ''})
+
+
+@app.route('/api/tracks/<kind>/<int:tid>/note', methods=['PUT'])
+def set_track_note(kind, tid):
+    if kind not in ('local','online'):
+        abort(400)
+    d = request.json
+    conn = get_db()
+    conn.execute('INSERT OR REPLACE INTO settings (key,value) VALUES (?,?)',
+                 (f'note_{kind}_{tid}', d.get('note', '')))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+# ---------------------------------------------------------------------------
 # Routes — HTTP proxy for source sandbox
 # ---------------------------------------------------------------------------
 @app.route('/api/proxy', methods=['POST'])
