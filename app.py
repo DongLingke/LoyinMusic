@@ -652,6 +652,161 @@ def record_history():
 
 
 # ---------------------------------------------------------------------------
+# Routes — Online tracks
+# ---------------------------------------------------------------------------
+@app.route('/api/online/tracks')
+def list_online_tracks():
+    conn = get_db()
+    q = request.args.get('q', '').strip()
+    sort = request.args.get('sort', 'added_at')
+    order = request.args.get('order', 'desc')
+    allowed_sorts = {'title','artist','album','added_at','duration_ms','play_count','source'}
+    if sort not in allowed_sorts:
+        sort = 'added_at'
+    if order not in ('asc','desc'):
+        order = 'desc'
+    if q:
+        like = f'%{q}%'
+        rows = conn.execute(
+            f'SELECT * FROM online_tracks WHERE title LIKE ? OR artist LIKE ? OR album LIKE ? ORDER BY {sort} {order}',
+            (like, like, like)
+        ).fetchall()
+    else:
+        rows = conn.execute(f'SELECT * FROM online_tracks ORDER BY {sort} {order}').fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/online/tracks/<int:tid>')
+def get_online_track(tid):
+    conn = get_db()
+    row = conn.execute('SELECT * FROM online_tracks WHERE id=?', (tid,)).fetchone()
+    conn.close()
+    if not row:
+        abort(404)
+    return jsonify(dict(row))
+
+
+@app.route('/api/online/tracks', methods=['POST'])
+def add_online_track():
+    d = request.json
+    conn = get_db()
+    cur = conn.execute('''INSERT INTO online_tracks
+        (source, source_id, source_meta, title, artist, album, duration_ms,
+         cover_url, default_quality, url_cache, url_cache_at, url_cache_q)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+        (d.get('source', 'url'), d.get('source_id'),
+         json.dumps(d.get('source_meta')) if d.get('source_meta') else None,
+         d['title'], d.get('artist',''), d.get('album',''),
+         d.get('duration_ms', 0), d.get('cover_url'),
+         d.get('default_quality'), d.get('url', ''),
+         datetime.now().strftime('%Y-%m-%d %H:%M:%S') if d.get('url') else None,
+         d.get('default_quality')))
+    conn.commit()
+    track = dict(conn.execute('SELECT * FROM online_tracks WHERE id=?', (cur.lastrowid,)).fetchone())
+    conn.close()
+    return jsonify(track), 201
+
+
+@app.route('/api/online/tracks/<int:tid>', methods=['PUT'])
+def update_online_track(tid):
+    d = request.json
+    conn = get_db()
+    allowed = {'title','artist','album','duration_ms','cover_url','default_quality',
+               'url_cache','url_cache_at','url_cache_q','lyric_cache','source_meta'}
+    fields = [f'{k}=?' for k in d if k in allowed]
+    values = [d[k] for k in d if k in allowed] + [tid]
+    if fields:
+        conn.execute(f'UPDATE online_tracks SET {",".join(fields)} WHERE id=?', values)
+        conn.commit()
+    track = conn.execute('SELECT * FROM online_tracks WHERE id=?', (tid,)).fetchone()
+    conn.close()
+    return jsonify(dict(track)) if track else abort(404)
+
+
+@app.route('/api/online/tracks/<int:tid>', methods=['DELETE'])
+def delete_online_track(tid):
+    conn = get_db()
+    conn.execute('DELETE FROM online_tracks WHERE id=?', (tid,))
+    conn.execute('DELETE FROM track_tags WHERE track_kind=? AND track_id=?', ('online', tid))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+# ---------------------------------------------------------------------------
+# Routes — Custom sources (LX Music compatible)
+# ---------------------------------------------------------------------------
+@app.route('/api/sources')
+def list_sources():
+    conn = get_db()
+    rows = conn.execute('SELECT id, name, description, version, author, homepage, sources_json, enabled, installed_at, updated_at FROM custom_sources ORDER BY name').fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/sources', methods=['POST'])
+def install_source():
+    import re
+    raw = None
+    if request.content_type and 'multipart' in request.content_type:
+        f = request.files.get('file')
+        if f:
+            raw = f.read().decode('utf-8', errors='replace')
+    else:
+        d = request.json or {}
+        raw = d.get('raw_script', '')
+    if not raw:
+        return jsonify({'error': 'no_script'}), 400
+    meta = {}
+    for m in re.finditer(r'@(\w+)\s+(.+)', raw[:2000]):
+        meta[m.group(1)] = m.group(2).strip()
+    conn = get_db()
+    cur = conn.execute(
+        'INSERT INTO custom_sources (name, description, version, author, homepage, raw_script) VALUES (?,?,?,?,?,?)',
+        (meta.get('name','未命名源'), meta.get('description',''), meta.get('version',''),
+         meta.get('author',''), meta.get('homepage',''), raw))
+    conn.commit()
+    row = dict(conn.execute('SELECT id, name, description, version, author, homepage, sources_json, enabled, installed_at FROM custom_sources WHERE id=?', (cur.lastrowid,)).fetchone())
+    conn.close()
+    return jsonify(row), 201
+
+
+@app.route('/api/sources/<int:sid>', methods=['PUT'])
+def update_source(sid):
+    d = request.json
+    conn = get_db()
+    allowed = {'enabled','sources_json','updated_at'}
+    fields = [f'{k}=?' for k in d if k in allowed]
+    values = [d[k] for k in d if k in allowed] + [sid]
+    if fields:
+        conn.execute(f'UPDATE custom_sources SET {",".join(fields)} WHERE id=?', values)
+        conn.commit()
+    row = conn.execute('SELECT id, name, description, version, author, homepage, sources_json, enabled, installed_at, updated_at FROM custom_sources WHERE id=?', (sid,)).fetchone()
+    conn.close()
+    return jsonify(dict(row)) if row else abort(404)
+
+
+@app.route('/api/sources/<int:sid>', methods=['DELETE'])
+def delete_source(sid):
+    conn = get_db()
+    conn.execute('DELETE FROM custom_sources WHERE id=?', (sid,))
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
+
+
+@app.route('/api/sources/<int:sid>/script')
+def get_source_script(sid):
+    conn = get_db()
+    row = conn.execute('SELECT raw_script FROM custom_sources WHERE id=?', (sid,)).fetchone()
+    conn.close()
+    if not row:
+        abort(404)
+    return Response(row['raw_script'], mimetype='application/javascript')
+
+
+# ---------------------------------------------------------------------------
 # Routes — HTTP proxy for source sandbox
 # ---------------------------------------------------------------------------
 @app.route('/api/proxy', methods=['POST'])
