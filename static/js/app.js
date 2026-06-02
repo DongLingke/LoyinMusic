@@ -1084,7 +1084,7 @@ async function loadHistoryMonth() {
 // ── Now-playing overlay ──────────────────────────────────────────
 function bindNowPlaying() {
   // Click on player cover or track info → open overlay
-  document.querySelector('.player-track-info')?.addEventListener('click', () => {
+  document.getElementById('player-info-clickable')?.addEventListener('click', () => {
     if (!player._currentTrack) return;
     document.getElementById('now-playing-overlay').classList.remove('hidden');
   });
@@ -1106,11 +1106,11 @@ function bindNowPlaying() {
 }
 
 function bindNav() {
-  document.querySelectorAll('.nav-item').forEach(btn => {
+  document.querySelectorAll('.nav-btn[data-view]').forEach(btn => {
     btn.onclick = () => {
       state.view = btn.dataset.view;
       state.searchQuery = '';
-      document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
+      document.querySelectorAll('.nav-btn[data-view]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       render();
     };
