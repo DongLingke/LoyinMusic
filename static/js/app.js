@@ -53,6 +53,33 @@ const state = {
   historyDaysWithPlays: new Set(),
 };
 
+// ── Wallpaper presets ─────────────────────────────────────────────
+// Rich gradients so the frosted glass card has something to refract.
+const WALLPAPERS = {
+  aurora:   { name: '极光',  css: 'radial-gradient(at 20% 20%, #1a3a5c 0%, transparent 50%), radial-gradient(at 80% 25%, #2d1b4e 0%, transparent 50%), radial-gradient(at 50% 80%, #0d4d4d 0%, transparent 55%), #0a0a14' },
+  dusk:     { name: '暮色',  css: 'radial-gradient(at 15% 25%, #4a2545 0%, transparent 50%), radial-gradient(at 85% 30%, #5c3a1e 0%, transparent 50%), radial-gradient(at 50% 90%, #2a1a3e 0%, transparent 55%), #120a14' },
+  ocean:    { name: '深海',  css: 'radial-gradient(at 25% 20%, #0d3b66 0%, transparent 55%), radial-gradient(at 75% 35%, #134e5e 0%, transparent 50%), radial-gradient(at 50% 85%, #071e3d 0%, transparent 55%), #060d18' },
+  ember:    { name: '炭火',  css: 'radial-gradient(at 20% 25%, #5c1f1f 0%, transparent 50%), radial-gradient(at 80% 20%, #6b3410 0%, transparent 50%), radial-gradient(at 50% 90%, #2e0f0f 0%, transparent 55%), #140807' },
+  forest:   { name: '森林',  css: 'radial-gradient(at 25% 20%, #1e4d2b 0%, transparent 52%), radial-gradient(at 80% 30%, #2d5a3d 0%, transparent 50%), radial-gradient(at 50% 88%, #0f2e1a 0%, transparent 55%), #08120c' },
+  mono:     { name: '极简',  css: 'radial-gradient(at 30% 25%, #2a2a35 0%, transparent 55%), radial-gradient(at 75% 70%, #1c1c26 0%, transparent 55%), #0c0c12' },
+};
+
+// Apply wallpaper + theme to the DOM. Reads state.settings.
+function applyAppearance() {
+  const s = state.settings;
+  const wpKey = s.wallpaper || 'aurora';
+  const wpEl = document.getElementById('wallpaper');
+  if (wpEl) {
+    if (s.wallpaper_url) {
+      wpEl.style.background = `url("${s.wallpaper_url}") center/cover no-repeat`;
+    } else {
+      wpEl.style.background = (WALLPAPERS[wpKey] || WALLPAPERS.aurora).css;
+    }
+  }
+  // Theme (dark default)
+  document.body.classList.toggle('theme-dark', s.theme !== 'light');
+}
+
 // ── Utilities ─────────────────────────────────────────────────────
 const esc = s => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
 
@@ -625,6 +652,42 @@ function renderSettingsView() {
 
   let html = `<div class="view-header"><div class="view-title">设置</div></div>`;
 
+  // Appearance
+  const curWp = s.wallpaper || 'aurora';
+  html += `<div class="settings-section">
+    <div class="settings-section-title">外观</div>
+    <div class="settings-group">
+      <div class="settings-row" style="flex-direction:column;align-items:stretch;gap:10px">
+        <div class="settings-row-label">壁纸</div>
+        <div class="wp-grid">
+          ${Object.entries(WALLPAPERS).map(([key, wp]) => `
+            <div class="wp-swatch ${!s.wallpaper_url && curWp === key ? 'active' : ''}"
+                 data-act="set-wallpaper" data-wp="${key}"
+                 style="background:${wp.css}" title="${wp.name}">
+              <span class="wp-swatch-name">${wp.name}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+      <div class="settings-row">
+        <div><div class="settings-row-label">自定义壁纸</div>
+          <div class="settings-row-sub">填入图片 URL（留空则用上方预设）</div></div>
+        <button class="btn btn-ghost" id="btn-set-wp-url">${s.wallpaper_url ? '更换' : '设置'}</button>
+      </div>
+      ${s.wallpaper_url ? `<div class="settings-row">
+        <div class="settings-row-sub" style="word-break:break-all;flex:1">${esc(s.wallpaper_url)}</div>
+        <button class="btn btn-ghost" style="color:var(--danger)" id="btn-clear-wp-url">清除</button>
+      </div>` : ''}
+      <div class="settings-row">
+        <div class="settings-row-label">主题</div>
+        <div style="display:flex;gap:4px">
+          <button class="btn ${s.theme !== 'light' ? 'btn-primary' : 'btn-ghost'}" data-act="set-theme" data-theme="dark" style="padding:4px 12px;font-size:0.8rem">深色</button>
+          <button class="btn ${s.theme === 'light' ? 'btn-primary' : 'btn-ghost'}" data-act="set-theme" data-theme="light" style="padding:4px 12px;font-size:0.8rem">浅色</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+
   // Local music
   html += `<div class="settings-section">
     <div class="settings-section-title">本地音乐</div>
@@ -959,6 +1022,42 @@ function bindViewEvents() {
     };
   });
 
+  // ── Appearance: wallpaper + theme ───────────────────────────────
+  document.querySelectorAll('[data-act="set-wallpaper"]').forEach(el => {
+    el.onclick = async () => {
+      await api.put('/settings', { wallpaper: el.dataset.wp, wallpaper_url: '' });
+      state.settings.wallpaper = el.dataset.wp;
+      state.settings.wallpaper_url = '';
+      applyAppearance();
+      render();
+    };
+  });
+
+  document.getElementById('btn-set-wp-url')?.addEventListener('click', async () => {
+    const url = prompt('输入壁纸图片 URL', state.settings.wallpaper_url || '');
+    if (url === null) return;
+    await api.put('/settings', { wallpaper_url: url.trim() });
+    state.settings.wallpaper_url = url.trim();
+    applyAppearance();
+    render();
+  });
+
+  document.getElementById('btn-clear-wp-url')?.addEventListener('click', async () => {
+    await api.put('/settings', { wallpaper_url: '' });
+    state.settings.wallpaper_url = '';
+    applyAppearance();
+    render();
+  });
+
+  document.querySelectorAll('[data-act="set-theme"]').forEach(btn => {
+    btn.onclick = async () => {
+      await api.put('/settings', { theme: btn.dataset.theme });
+      state.settings.theme = btn.dataset.theme;
+      applyAppearance();
+      render();
+    };
+  });
+
   // ── M9: Export / Import ─────────────────────────────────────────
   document.getElementById('btn-export')?.addEventListener('click', async () => {
     const data = await api.get('/export');
@@ -1137,6 +1236,8 @@ async function boot() {
   state.settings = settings;
   state.sources = sources;
   state.playlists = playlists;
+
+  applyAppearance();
 
   // Pre-load today's history
   const today = new Date().toISOString().slice(0, 10);

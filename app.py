@@ -36,6 +36,8 @@ COVERS_DIR.mkdir(parents=True, exist_ok=True)
 app = Flask(__name__,
             static_folder=str(BASE / 'static'),
             template_folder=str(BASE / 'templates'))
+app.config['TEMPLATES_AUTO_RELOAD'] = True
+app.jinja_env.auto_reload = True
 
 # ---------------------------------------------------------------------------
 # Database
@@ -169,6 +171,8 @@ def init_db():
     # Default settings
     defaults = {
         'theme': 'dark',
+        'wallpaper': 'aurora',
+        'wallpaper_url': '',
         'scan_folders': '[]',
         'auto_scan_on_start': 'true',
         'default_quality_online': '320k',
@@ -1026,13 +1030,19 @@ def proxy():
 init_db()
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5050))
+    import logging
+    # Disable Werkzeug's ANSI color codes so preview tools can parse stdout
+    os.environ['NO_COLOR'] = '1'
+    logging.getLogger('werkzeug').setLevel(logging.WARNING)
+
+    port = int(os.environ.get('PORT', 5088))
     host = os.environ.get('HOST', '0.0.0.0')
-    print(f'🎵 听迹 Tunenote starting on http://{host}:{port}')
     # Auto-scan on start
     conn = get_db()
     auto = conn.execute("SELECT value FROM settings WHERE key='auto_scan_on_start'").fetchone()
     conn.close()
     if auto and auto['value'] == 'true':
         threading.Thread(target=run_scan, daemon=True).start()
-    app.run(host=host, port=port, debug=True, use_reloader=False)
+
+    print(f' * Running on http://{host}:{port}', flush=True)
+    app.run(host=host, port=port, debug=False)
