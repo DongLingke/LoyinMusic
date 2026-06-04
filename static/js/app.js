@@ -51,6 +51,12 @@ const state = {
   historyMonth: null,      // Date object for calendar month navigation
   historyTracks: [],
   historyDaysWithPlays: new Set(),
+  localSubView: 'all',     // 'all' | 'albums' | 'artists'
+  albums: [],
+  artists: [],
+  albumFilter: null,       // when viewing one album's tracks
+  artistFilter: null,
+  addingToPlaylist: null,  // { kind, id } — track pending playlist assignment
 };
 
 // ── Wallpaper presets ─────────────────────────────────────────────
@@ -400,7 +406,10 @@ function renderTrackTable(tracks, kindCol = false) {
       <td class="td-album">${esc(t.album || '')}</td>
       ${kindCol ? `<td class="td-kind">${kindBadge(kind)}</td>` : ''}
       <td class="td-duration">${fmtTime(t.duration_ms)}</td>
-      <td class="td-actions"><button class="btn-tag-action" data-act="open-tagger" data-kind="${kind}" data-id="${id}" title="标签">🏷</button></td>
+      <td class="td-actions">
+        <button class="btn-tag-action" data-act="add-to-playlist" data-kind="${kind}" data-id="${id}" title="加入歌单">➕</button>
+        <button class="btn-tag-action" data-act="open-tagger" data-kind="${kind}" data-id="${id}" title="标签">🏷</button>
+      </td>
     </tr>`;
   });
   html += '</tbody></table>';
@@ -436,12 +445,16 @@ async function loadTaggerChips(kind, id) {
 
 // ── M1: Local view ────────────────────────────────────────────────
 function renderLocalView() {
-  const tracks = state.localTracks;
-  const q = state.searchQuery.toLowerCase();
-  const filtered = q ? tracks.filter(t => (t.title+t.artist+t.album).toLowerCase().includes(q)) : tracks;
-
+  const sub = state.localSubView;
   let html = `<div class="view-header">
-    <div class="view-title">本地音乐 <span class="count">(${filtered.length})</span></div>
+    <div style="display:flex;align-items:center;gap:12px">
+      <div class="view-title">本地音乐</div>
+      <div class="subtab-row">
+        <button class="subtab ${sub==='all'?'active':''}" data-act="local-sub" data-sub="all">全部</button>
+        <button class="subtab ${sub==='albums'?'active':''}" data-act="local-sub" data-sub="albums">专辑</button>
+        <button class="subtab ${sub==='artists'?'active':''}" data-act="local-sub" data-sub="artists">艺人</button>
+      </div>
+    </div>
     <div class="search-box"><span class="search-icon">🔍</span>
       <input type="search" id="search-input" placeholder="搜索标题 / 艺人 / 专辑..." value="${esc(state.searchQuery)}">
     </div>
@@ -455,14 +468,58 @@ function renderLocalView() {
       <span>${esc(p.current)}</span></div>`;
   }
 
-  if (!filtered.length) {
-    html += `<div class="empty-state"><div class="empty-icon">🎵</div><div class="empty-text">
-      ${tracks.length === 0 ? '还没有本地音乐<br>在「设置」中添加扫描目录，然后点击「扫描」' : '没有匹配的结果'}
-    </div></div>`;
-  } else {
-    html += renderTrackTable(filtered.map(t => ({ ...t, kind: 'local' })));
+  // Drill-down: viewing one album or artist's tracks
+  if (state.albumFilter || state.artistFilter) {
+    const label = state.albumFilter || state.artistFilter;
+    const tracks = state.localTracks.filter(t =>
+      state.albumFilter ? t.album === state.albumFilter : t.artist === state.artistFilter);
+    html += `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <button class="btn btn-ghost" data-act="local-back">← 返回</button>
+      <span class="view-title" style="font-size:1.05rem">${esc(label)}</span>
+      <span class="count">(${tracks.length})</span>
+    </div>`;
+    html += renderTrackTable(tracks.map(t => ({ ...t, kind: 'local' })));
+    return html;
   }
+
+  const q = state.searchQuery.toLowerCase();
+
+  if (sub === 'albums') {
+    const albums = q ? state.albums.filter(a => (a.album+a.album_artist).toLowerCase().includes(q)) : state.albums;
+    if (!albums.length) { html += emptyLocal(); return html; }
+    html += `<div class="cover-grid">${albums.map(a => `
+      <div class="cover-card" data-act="open-album" data-album="${esc(a.album)}">
+        <div class="cover-art">${a.cover_hash ? `<img src="/api/local/cover/${a.cover_hash}" loading="lazy">` : '<div class="cover-ph">💿</div>'}</div>
+        <div class="cover-name">${esc(a.album)}</div>
+        <div class="cover-sub">${esc(a.album_artist || '')} · ${a.track_count}首</div>
+      </div>`).join('')}</div>`;
+    return html;
+  }
+
+  if (sub === 'artists') {
+    const artists = q ? state.artists.filter(a => a.artist.toLowerCase().includes(q)) : state.artists;
+    if (!artists.length) { html += emptyLocal(); return html; }
+    html += `<div class="cover-grid">${artists.map(a => `
+      <div class="cover-card artist" data-act="open-artist" data-artist="${esc(a.artist)}">
+        <div class="cover-art round"><div class="cover-ph">🎤</div></div>
+        <div class="cover-name">${esc(a.artist)}</div>
+        <div class="cover-sub">${a.album_count}张专辑 · ${a.track_count}首</div>
+      </div>`).join('')}</div>`;
+    return html;
+  }
+
+  // 'all'
+  const tracks = state.localTracks;
+  const filtered = q ? tracks.filter(t => (t.title+t.artist+t.album).toLowerCase().includes(q)) : tracks;
+  if (!filtered.length) { html += emptyLocal(tracks.length === 0); return html; }
+  html += renderTrackTable(filtered.map(t => ({ ...t, kind: 'local' })));
   return html;
+}
+
+function emptyLocal(noData = true) {
+  return `<div class="empty-state"><div class="empty-icon">🎵</div><div class="empty-text">
+    ${noData ? '还没有本地音乐<br>在「设置」中添加扫描目录，然后点击「扫描」' : '没有匹配的结果'}
+  </div></div>`;
 }
 
 // ── M3: Online view ───────────────────────────────────────────────
@@ -479,24 +536,27 @@ function renderOnlineView() {
     <div class="view-title">在线音乐 <span class="count">(${filtered.length})</span></div>
     <div style="display:flex;gap:8px;align-items:center">
       <button class="btn btn-ghost" id="btn-add-url">+ 外链</button>
+      <button class="btn btn-ghost" id="btn-import-pl">导入歌单</button>
       <div class="search-box"><span class="search-icon">🔍</span>
-        <input type="search" id="search-input" placeholder="搜索收藏 / 输入关键词搜索音源..." value="${esc(state.searchQuery)}">
+        <input type="search" id="search-input" placeholder="搜索关键词，回车搜索…" value="${esc(state.searchQuery)}">
       </div>
-      ${sourceKeys.length ? `<button class="btn btn-primary" id="btn-source-search">搜索音源</button>` : ''}
+      <button class="btn btn-primary" id="btn-source-search">搜索</button>
     </div>
   </div>`;
 
-  // Cross-source search results
+  // Search results (iTunes built-in + sandbox sources)
   if (state.onlineSearchResults.length) {
-    html += `<div class="settings-section-title" style="margin-top:0">搜索结果 <button class="btn btn-ghost" style="font-size:0.75rem;padding:2px 8px" id="btn-clear-results">清除</button></div>`;
-    html += renderTrackTable(state.onlineSearchResults.map(t => ({ ...t, kind: 'online' })));
-    html += '<div style="margin:20px 0;border-top:1px solid var(--border)"></div>';
+    const srcNote = sourceKeys.length ? `（含音源：${sourceKeys.filter(k=>k!=='local').join(', ')||'内置'}）` : '（内置 iTunes，30 秒试听）';
+    html += `<div class="settings-section-title" style="margin-top:0">搜索结果 ${srcNote}
+      <button class="btn btn-ghost" style="font-size:0.72rem;padding:2px 8px" id="btn-clear-results">清除</button></div>`;
+    html += renderSearchResults(state.onlineSearchResults);
+    html += '<div style="margin:18px 0;border-top:1px solid var(--divider)"></div>';
     html += '<div class="settings-section-title">我的收藏</div>';
   }
 
   if (!filtered.length && !state.onlineSearchResults.length) {
     html += `<div class="empty-state"><div class="empty-icon">🌐</div><div class="empty-text">
-      还没有在线音乐<br>点击「+ 外链」添加，或安装音源脚本后搜索
+      搜索框输入关键词即可搜索（内置 iTunes 试听）<br>装上洛雪音源脚本后可搜索完整曲库 · 也可「+ 外链」添加直链
     </div></div>`;
   } else if (filtered.length) {
     html += renderTrackTable(filtered.map(t => ({ ...t, kind: 'online' })));
@@ -504,28 +564,67 @@ function renderOnlineView() {
   return html;
 }
 
+// Search results render with a 收藏(save) action (results aren't in DB yet)
+function renderSearchResults(results) {
+  let html = `<table class="track-table"><thead><tr>
+    <th class="td-idx">#</th><th class="td-cover"></th>
+    <th class="td-title">标题</th><th class="td-artist">艺人</th>
+    <th class="td-album">专辑</th><th class="td-kind">来源</th>
+    <th class="td-duration">时长</th><th class="td-actions"></th>
+  </tr></thead><tbody>`;
+  results.forEach((t, i) => {
+    const cv = t.cover_url || '';
+    html += `<tr class="track-row" data-search-idx="${i}">
+      <td class="td-idx">${i + 1}</td>
+      <td class="td-cover">${cv ? `<img src="${esc(cv)}" loading="lazy">` : '<div style="width:28px;height:28px;border-radius:4px;background:var(--item-glass)"></div>'}</td>
+      <td class="td-title"><span class="track-name">${esc(t.title || '')}</span>${t.is_preview ? ' <span class="kind-badge online">试听</span>' : ''}</td>
+      <td class="td-artist">${esc(t.artist || '')}</td>
+      <td class="td-album">${esc(t.album || '')}</td>
+      <td class="td-kind">${esc(t.source || '')}</td>
+      <td class="td-duration">${fmtTime(t.duration_ms)}</td>
+      <td class="td-actions"><button class="btn-tag-action" data-act="save-result" data-search-idx="${i}" title="收藏">⭐</button></td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  return html;
+}
+
 // ── M2: Tags view ─────────────────────────────────────────────────
 function renderTagsView() {
   let html = `<div class="view-header">
     <div class="view-title">标签</div>
-    <button class="btn btn-primary" id="btn-add-tag">+ 新建标签</button>
+    <div style="display:flex;gap:8px">
+      <button class="btn btn-ghost" id="btn-add-smart-tag">+ 智能标签</button>
+      <button class="btn btn-primary" id="btn-add-tag">+ 新建标签</button>
+    </div>
   </div>`;
 
   if (!state.tags.length) {
     html += `<div class="empty-state"><div class="empty-icon">🏷</div>
-      <div class="empty-text">还没有标签<br>给音乐打上标签来分类管理</div></div>`;
+      <div class="empty-text">还没有标签<br>「新建标签」手动给音乐分类，或「智能标签」按规则自动聚合</div></div>`;
     return html;
   }
 
-  html += '<div class="tags-row" style="gap:8px;margin-bottom:20px">';
-  state.tags.forEach(t => {
+  const userTags = state.tags.filter(t => t.kind !== 'smart');
+  const smartTags = state.tags.filter(t => t.kind === 'smart');
+
+  const chip = t => {
     const active = state.activeTagId === t.id;
-    html += `<div class="tag-chip ${active ? 'active' : ''}" data-act="select-tag" data-tag-id="${t.id}">
-      <span>${esc(t.name)}</span>
+    const isSmart = t.kind === 'smart';
+    return `<div class="tag-chip ${active ? 'active' : ''} ${isSmart ? 'smart' : ''}" data-act="select-tag" data-tag-id="${t.id}">
+      <span>${isSmart ? '⚡ ' : ''}${esc(t.name)}</span>
       <span class="tag-remove" data-act="del-tag" data-id="${t.id}">&times;</span>
     </div>`;
-  });
-  html += '</div>';
+  };
+
+  if (smartTags.length) {
+    html += '<div class="settings-section-title" style="margin-top:0">智能标签（自动）</div>';
+    html += '<div class="tags-row" style="gap:8px;margin-bottom:16px">' + smartTags.map(chip).join('') + '</div>';
+  }
+  if (userTags.length) {
+    html += '<div class="settings-section-title">我的标签</div>';
+    html += '<div class="tags-row" style="gap:8px;margin-bottom:16px">' + userTags.map(chip).join('') + '</div>';
+  }
 
   if (state.activeTagId) {
     const tag = state.tags.find(t => t.id === state.activeTagId);
@@ -806,28 +905,43 @@ function bindViewEvents() {
   // Search (shared by local + online)
   const si = document.getElementById('search-input');
   if (si) {
-    si.oninput = () => { state.searchQuery = si.value; render(); };
-    // Re-focus after render so typing isn't interrupted
+    si.oninput = () => { state.searchQuery = si.value; if (state.view === 'local') render(); };
+    // On the online view, Enter triggers a real search instead of live-filtering
+    if (state.view === 'online') {
+      si.onkeydown = (e) => { if (e.key === 'Enter') doOnlineSearch(); };
+    }
     const val = si.value; si.focus(); si.value = ''; si.value = val;
   }
 
-  // Track row click → play
-  document.querySelectorAll('.track-row').forEach(row => {
+  // Track row click → play (DB-backed rows)
+  document.querySelectorAll('.track-row[data-id]').forEach(row => {
     row.onclick = (e) => {
-      if (e.target.closest('[data-act]')) return; // don't play when clicking action buttons
+      if (e.target.closest('[data-act]')) return;
       const kind = row.dataset.kind;
       const id = parseInt(row.dataset.id, 10);
-      // Build queue from all visible rows
-      const rows = [...document.querySelectorAll('.track-row')];
+      const rows = [...document.querySelectorAll('.track-row[data-id]')];
       const queue = rows.map(r => {
         const k = r.dataset.kind;
         const tid = parseInt(r.dataset.id, 10);
-        const source = k === 'local' ? state.localTracks : state.onlineTracks;
-        const track = source.find(t => t.id === tid) || state.onlineSearchResults.find(t => t.id === tid);
-        return track ? { ...track, kind: k } : null;
+        const pool = k === 'local' ? state.localTracks : state.onlineTracks;
+        const track = pool.find(t => t.id === tid)
+          || (state.activePlaylist?.items || []).find(t => t.track_id === tid)
+          || state.tagTracks.find(t => t.track_id === tid);
+        return track ? { ...track, kind: k, id: tid } : null;
       }).filter(Boolean);
       const idx = queue.findIndex(t => t.kind === kind && t.id === id);
       if (idx >= 0) player.playTrack(queue[idx], queue, idx);
+    };
+  });
+
+  // Search-result row click → play preview/resolved url directly.
+  // Builds a queue from all result rows so next/prev walks the results.
+  document.querySelectorAll('.track-row[data-search-idx]').forEach(row => {
+    row.onclick = (e) => {
+      if (e.target.closest('[data-act]')) return;
+      const idx = parseInt(row.dataset.searchIdx, 10);
+      const queue = state.onlineSearchResults.map((t, i) => ({ ...t, kind: 'online', id: t.id || `search-${i}` }));
+      if (queue[idx]) player.playTrack(queue[idx], queue, idx);
     };
   });
 
@@ -862,6 +976,77 @@ function bindViewEvents() {
         state.tagTracks = [];
       }
       render();
+    };
+  });
+
+  // ── Smart tag creation ────────────────────────────────────────
+  document.getElementById('btn-add-smart-tag')?.addEventListener('click', async () => {
+    const presets = [
+      { name: '最近添加', rule: { added_within: '7d' } },
+      { name: '常听', rule: { play_count_gte: 5 } },
+      { name: '从未播放', rule: { play_count_eq: 0 } },
+      { name: '本月新增', rule: { added_within: '30d' } },
+    ];
+    const choice = prompt(
+      '选择智能标签规则（输入编号）：\n' +
+      presets.map((p, i) => `${i + 1}. ${p.name}`).join('\n'),
+      '1'
+    );
+    const idx = parseInt(choice, 10) - 1;
+    if (isNaN(idx) || !presets[idx]) return;
+    await api.post('/tags', {
+      name: presets[idx].name, kind: 'smart',
+      rule_json: JSON.stringify(presets[idx].rule),
+    });
+    state.tags = await api.get('/tags');
+    render();
+  });
+
+  // ── Local sub-views (全部/专辑/艺人) ──────────────────────────
+  document.querySelectorAll('[data-act="local-sub"]').forEach(btn => {
+    btn.onclick = async () => {
+      state.localSubView = btn.dataset.sub;
+      state.albumFilter = null; state.artistFilter = null;
+      state.searchQuery = '';
+      if (btn.dataset.sub === 'albums' && !state.albums.length) {
+        state.albums = await api.get('/local/albums');
+      } else if (btn.dataset.sub === 'artists' && !state.artists.length) {
+        state.artists = await api.get('/local/artists');
+      }
+      render();
+    };
+  });
+  document.querySelectorAll('[data-act="open-album"]').forEach(el => {
+    el.onclick = () => { state.albumFilter = el.dataset.album; render(); };
+  });
+  document.querySelectorAll('[data-act="open-artist"]').forEach(el => {
+    el.onclick = () => { state.artistFilter = el.dataset.artist; render(); };
+  });
+  document.querySelector('[data-act="local-back"]')?.addEventListener('click', () => {
+    state.albumFilter = null; state.artistFilter = null; render();
+  });
+
+  // ── Add to playlist ───────────────────────────────────────────
+  document.querySelectorAll('[data-act="add-to-playlist"]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const kind = btn.dataset.kind, id = parseInt(btn.dataset.id, 10);
+      if (!state.playlists.length) {
+        const name = prompt('还没有歌单，输入名称新建一个：', '我的歌单');
+        if (!name?.trim()) return;
+        const pl = await api.post('/playlists', { name: name.trim() });
+        state.playlists = await api.get('/playlists');
+        await api.post(`/playlists/${pl.id}/items`, { track_kind: kind, track_id: id });
+        btn.textContent = '✓';
+        return;
+      }
+      const list = state.playlists.map((p, i) => `${i + 1}. ${p.name}`).join('\n');
+      const choice = prompt(`加入哪个歌单？（输入编号）\n${list}`, '1');
+      const idx = parseInt(choice, 10) - 1;
+      if (isNaN(idx) || !state.playlists[idx]) return;
+      await api.post(`/playlists/${state.playlists[idx].id}/items`, { track_kind: kind, track_id: id });
+      state.playlists = await api.get('/playlists');
+      btn.textContent = '✓';
     };
   });
 
@@ -914,37 +1099,50 @@ function bindViewEvents() {
     render();
   });
 
-  // ── Online: cross-source search (M5) ──────────────────────────
-  document.getElementById('btn-source-search')?.addEventListener('click', async () => {
-    const q = state.searchQuery.trim();
-    if (!q) { alert('请先输入搜索关键词'); return; }
-    const avail = window.sourceHost ? window.sourceHost.getAvailableSources() : {};
-    const results = [];
-    for (const [sourceKey, info] of Object.entries(avail)) {
-      if (sourceKey === 'local') continue;
-      try {
-        const data = await window.sourceHost.request(sourceKey, 'musicUrl', {
-          type: state.settings.default_quality_online || '320k',
-          musicInfo: { keyword: q },
-        });
-        // Some sources return a URL for musicUrl with keyword — that's search
-        // For real search, the protocol doesn't have a standard 'search' action,
-        // so this is a best-effort pass-through
-        if (typeof data === 'string') {
-          results.push({
-            id: null, source: sourceKey, source_id: q, title: q,
-            artist: sourceKey, url_cache: data, kind: 'online',
-          });
-        }
-      } catch { /* source doesn't support search-by-keyword */ }
-    }
-    state.onlineSearchResults = results;
-    render();
-  });
+  // ── Online: search (M5) ───────────────────────────────────────
+  document.getElementById('btn-source-search')?.addEventListener('click', doOnlineSearch);
 
   document.getElementById('btn-clear-results')?.addEventListener('click', () => {
     state.onlineSearchResults = [];
     render();
+  });
+
+  document.getElementById('btn-import-pl')?.addEventListener('click', async () => {
+    const inp = document.createElement('input');
+    inp.type = 'file';
+    inp.accept = '.json,.lxmf,.m3u,.m3u8,.txt';
+    inp.onchange = async () => {
+      const file = inp.files[0];
+      if (!file) return;
+      const text = await file.text();
+      const isJson = file.name.endsWith('.json') || file.name.endsWith('.lxmf') || text.trim().startsWith('{') || text.trim().startsWith('[');
+      const r = await fetch('/api/online/import', {
+        method: 'POST',
+        headers: { 'Content-Type': isJson ? 'application/json' : 'text/plain' },
+        body: text,
+      });
+      const d = await r.json();
+      alert(`导入完成，新增 ${d.added || 0} 首`);
+      state.onlineTracks = await api.get('/online/tracks');
+      render();
+    };
+    inp.click();
+  });
+
+  // Save a search result into the online library (⭐)
+  document.querySelectorAll('[data-act="save-result"]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const t = state.onlineSearchResults[parseInt(btn.dataset.searchIdx, 10)];
+      if (!t) return;
+      await api.post('/online/tracks', {
+        source: t.source, source_id: t.source_id, title: t.title, artist: t.artist,
+        album: t.album, duration_ms: t.duration_ms, cover_url: t.cover_url,
+        url: t.url_cache || '', source_meta: t.source_meta,
+      });
+      state.onlineTracks = await api.get('/online/tracks');
+      btn.textContent = '✓';
+    };
   });
 
   // ── Settings: folders + scan ──────────────────────────────────
@@ -1164,6 +1362,7 @@ async function pollScan() {
       clearInterval(_scanPoll); _scanPoll = null;
       state.scanProgress = null;
       state.localTracks = await api.get('/local/tracks');
+      state.albums = []; state.artists = []; // invalidate caches after scan
     }
     if (state.view === 'local' || state.view === 'settings') render();
   }, 1000);
@@ -1181,6 +1380,53 @@ async function loadHistoryMonth() {
 }
 
 // ── Now-playing overlay ──────────────────────────────────────────
+// ── Online search: built-in iTunes + sandbox sources ─────────────
+async function doOnlineSearch() {
+  const q = state.searchQuery.trim();
+  if (!q) return;
+  const results = [];
+
+  // 1) Built-in iTunes search (always available, 30s previews)
+  try {
+    const itunes = await api.get(`/online/search?q=${encodeURIComponent(q)}`);
+    if (Array.isArray(itunes)) results.push(...itunes);
+  } catch {}
+
+  // 2) Sandbox sources that implement a `search` action (full tracks)
+  const avail = window.sourceHost ? window.sourceHost.getAvailableSources() : {};
+  for (const sourceKey of Object.keys(avail)) {
+    if (sourceKey === 'local') continue;
+    try {
+      const data = await window.sourceHost.request(sourceKey, 'search',
+        { keyword: q, page: 1, limit: 30 }, 12000);
+      const list = Array.isArray(data) ? data : (data && data.list) || [];
+      for (const it of list) {
+        results.push({
+          source: sourceKey,
+          source_id: String(it.songmid || it.id || ''),
+          source_meta: JSON.stringify(it),
+          title: it.name || it.title || '',
+          artist: it.singer || it.artist || '',
+          album: it.albumName || it.album || '',
+          duration_ms: (it.interval ? _parseDur(it.interval) : it.duration_ms) || 0,
+          cover_url: it.img || it.cover_url || '',
+          url_cache: '',
+        });
+      }
+    } catch { /* source has no search action */ }
+  }
+
+  state.onlineSearchResults = results;
+  render();
+}
+
+function _parseDur(s) {
+  // "mm:ss" → ms
+  if (typeof s === 'number') return s * 1000;
+  const m = String(s).match(/(\d+):(\d+)/);
+  return m ? (parseInt(m[1]) * 60 + parseInt(m[2])) * 1000 : 0;
+}
+
 function bindNowPlaying() {
   // Click on player cover or track info → open overlay
   document.getElementById('player-info-clickable')?.addEventListener('click', () => {

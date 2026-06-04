@@ -476,10 +476,42 @@ def delete_local_track(tid):
 # ---------------------------------------------------------------------------
 # Routes — Tags
 # ---------------------------------------------------------------------------
+def compile_rule(rule):
+    """Compile a smart-tag rule dict into (where_sql, params) over a tracks
+    table. Supported leaf rules:
+      {"added_within": "7d"}        added_at within N days
+      {"play_count_gte": 10}        play_count >= N
+      {"play_count_eq": 0}          play_count == N
+      {"genre_contains": "jazz"}    genre LIKE %x%  (local only)
+      {"and": [...]} / {"or": [...]} combine
+    Returns ('1=1', []) for empty/unknown.
+    """
+    if not rule:
+        return '1=1', []
+    if 'and' in rule or 'or' in rule:
+        op = 'AND' if 'and' in rule else 'OR'
+        parts, params = [], []
+        for sub in rule.get('and') or rule.get('or'):
+            w, p = compile_rule(sub)
+            parts.append(f'({w})')
+            params.extend(p)
+        return (f' {op} '.join(parts) if parts else '1=1'), params
+    if 'added_within' in rule:
+        days = int(str(rule['added_within']).rstrip('d') or 7)
+        return "added_at >= datetime('now','localtime',?)", [f'-{days} days']
+    if 'play_count_gte' in rule:
+        return 'play_count >= ?', [int(rule['play_count_gte'])]
+    if 'play_count_eq' in rule:
+        return 'play_count = ?', [int(rule['play_count_eq'])]
+    if 'genre_contains' in rule:
+        return 'genre LIKE ?', [f"%{rule['genre_contains']}%"]
+    return '1=1', []
+
+
 @app.route('/api/tags')
 def list_tags():
     conn = get_db()
-    rows = conn.execute('SELECT * FROM tags ORDER BY name').fetchall()
+    rows = conn.execute('SELECT * FROM tags ORDER BY kind DESC, name').fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
 
@@ -525,6 +557,30 @@ def delete_tag(tid):
 @app.route('/api/tags/<int:tid>/tracks')
 def tag_tracks(tid):
     conn = get_db()
+    tag = conn.execute('SELECT * FROM tags WHERE id=?', (tid,)).fetchone()
+    if not tag:
+        conn.close()
+        abort(404)
+    # Smart tag: compute matching tracks on the fly from the rule
+    if tag['kind'] == 'smart' and tag['rule_json']:
+        try:
+            rule = json.loads(tag['rule_json'])
+        except (ValueError, TypeError):
+            rule = {}
+        where, params = compile_rule(rule)
+        local = conn.execute(
+            f"SELECT id as track_id, 'local' as track_kind, title, artist, album, "
+            f"duration_ms, cover_hash, NULL as cover_url FROM local_tracks WHERE {where} "
+            f"ORDER BY added_at DESC", params
+        ).fetchall()
+        # play_count / added_within rules also apply to online tracks
+        online = conn.execute(
+            f"SELECT id as track_id, 'online' as track_kind, title, artist, album, "
+            f"duration_ms, NULL as cover_hash, cover_url FROM online_tracks WHERE {where} "
+            f"ORDER BY added_at DESC", params
+        ).fetchall() if 'genre' not in where else []
+        conn.close()
+        return jsonify([dict(r) for r in (list(local) + list(online))])
     rows = conn.execute('''
         SELECT tt.track_kind, tt.track_id,
                CASE tt.track_kind
@@ -736,6 +792,98 @@ def delete_online_track(tid):
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
+
+
+@app.route('/api/online/search')
+def online_search():
+    """Built-in search via iTunes Search API.
+
+    A public, key-free, CORS-friendly metadata API that returns title /
+    artist / album / artwork and a 30s preview URL — fully legal, no
+    versioned platform scraping. The preview URL is directly playable, so
+    search → play works end-to-end out of the box. Full-track sources come
+    from installed LX scripts via the sandbox's `search` action (frontend).
+    """
+    import requests as req_lib
+    keyword = request.args.get('q', '').strip()
+    if not keyword:
+        return jsonify([])
+    try:
+        r = req_lib.get('https://itunes.apple.com/search', params={
+            'term': keyword, 'media': 'music', 'entity': 'song', 'limit': 30,
+        }, timeout=10)
+        data = r.json()
+        results = []
+        for item in data.get('results', []):
+            art = item.get('artworkUrl100', '')
+            # Upgrade artwork to higher res
+            if art:
+                art = art.replace('100x100', '300x300')
+            results.append({
+                'source': 'itunes',
+                'source_id': str(item.get('trackId', '')),
+                'title': item.get('trackName', ''),
+                'artist': item.get('artistName', ''),
+                'album': item.get('collectionName', ''),
+                'duration_ms': item.get('trackTimeMillis', 0),
+                'cover_url': art,
+                'url_cache': item.get('previewUrl', ''),  # 30s preview, directly playable
+                'is_preview': True,
+            })
+        return jsonify(results)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 502
+
+
+@app.route('/api/online/import', methods=['POST'])
+def online_import():
+    """Import a playlist. Supports LX Music export (.lxmf JSON) and m3u/m3u8."""
+    conn = get_db()
+    added = 0
+    content_type = request.content_type or ''
+    if 'application/json' in content_type:
+        d = request.json or {}
+        # LX Music .lxmf format: { "list": [ {name, singer, source, songmid, ...} ] }
+        items = d.get('list') or d.get('tracks') or (d if isinstance(d, list) else [])
+        for it in items:
+            title = it.get('name') or it.get('title') or ''
+            if not title:
+                continue
+            try:
+                conn.execute('''INSERT OR IGNORE INTO online_tracks
+                    (source, source_id, source_meta, title, artist, album, cover_url)
+                    VALUES (?,?,?,?,?,?,?)''',
+                    (it.get('source', 'url'), str(it.get('songmid', '')),
+                     json.dumps(it), title,
+                     it.get('singer') or it.get('artist', ''),
+                     it.get('albumName') or it.get('album', ''),
+                     it.get('img') or it.get('cover_url', '')))
+                added += 1
+            except Exception:
+                pass
+    else:
+        # m3u: lines of URLs, optional #EXTINF:dur,Artist - Title
+        text = request.get_data(as_text=True)
+        pending_title, pending_artist = '', ''
+        for line in text.splitlines():
+            line = line.strip()
+            if line.startswith('#EXTINF:'):
+                meta = line.split(',', 1)
+                if len(meta) == 2:
+                    name = meta[1].strip()
+                    if ' - ' in name:
+                        pending_artist, pending_title = name.split(' - ', 1)
+                    else:
+                        pending_title = name
+            elif line and not line.startswith('#'):
+                conn.execute('''INSERT OR IGNORE INTO online_tracks
+                    (source, title, artist, url_cache) VALUES (?,?,?,?)''',
+                    ('url', pending_title or line.split('/')[-1], pending_artist, line))
+                added += 1
+                pending_title, pending_artist = '', ''
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True, 'added': added})
 
 
 # ---------------------------------------------------------------------------

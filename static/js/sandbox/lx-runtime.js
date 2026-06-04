@@ -57,30 +57,75 @@
     return () => { delete _httpCallbacks[id]; };
   }
 
-  // Minimal utils — enough for most real-world LX sources
+  // Real crypto/zlib backed by crypto-js + pako (loaded in frame.html).
+  // Matches the LX Music utils API so most real-world sources work unchanged.
+  const CJS = globalThis.CryptoJS;
+  const PAKO = globalThis.pako;
+
+  // Coerce LX-style key/data args into CryptoJS WordArrays.
+  function toWA(v) {
+    if (v == null) return CJS.lib.WordArray.create();
+    if (typeof v === 'string') return CJS.enc.Utf8.parse(v);
+    if (v.words) return v; // already a WordArray
+    // Buffer / Uint8Array / Array
+    const bytes = v instanceof Uint8Array ? v : new Uint8Array(v);
+    return CJS.lib.WordArray.create(bytes);
+  }
+  const MODES = { CBC: 'CBC', ECB: 'ECB', CFB: 'CFB', OFB: 'OFB', CTR: 'CTR' };
+  const PADS = { Pkcs7: 'Pkcs7', PKCS7: 'Pkcs7', NoPadding: 'NoPadding', ZeroPadding: 'ZeroPadding', Iso10126: 'Iso10126' };
+
   const utils = {
     buffer: {
+      from(data, enc) {
+        if (typeof data === 'string') {
+          if (enc === 'base64') return CJS.enc.Base64.parse(data);
+          if (enc === 'hex') return CJS.enc.Hex.parse(data);
+          return CJS.enc.Utf8.parse(data);
+        }
+        return toWA(data);
+      },
       bufToString(buf, format) {
         if (typeof buf === 'string') return buf;
-        const dec = new TextDecoder(format || 'utf-8');
-        return dec.decode(buf instanceof ArrayBuffer ? buf : new Uint8Array(buf));
+        const wa = buf && buf.words ? buf : toWA(buf);
+        if (format === 'base64') return CJS.enc.Base64.stringify(wa);
+        if (format === 'hex') return CJS.enc.Hex.stringify(wa);
+        return CJS.enc.Utf8.stringify(wa);
       },
     },
     crypto: {
-      md5(str) {
-        // Simple MD5 — sources that need real crypto will fail gracefully;
-        // for full compat, the host could provide a crypto-js bridge.
-        // Placeholder: return hex hash via SubtleCrypto (async, but most
-        // sources only use md5 synchronously for cache keys — they'll get
-        // a predictable unique string either way).
-        let hash = 0;
-        for (let i = 0; i < str.length; i++) {
-          hash = ((hash << 5) - hash + str.charCodeAt(i)) | 0;
-        }
-        return Math.abs(hash).toString(16).padStart(8, '0');
+      md5(str, format = 'hex') {
+        const h = CJS.MD5(typeof str === 'string' ? str : toWA(str));
+        return format === 'base64' ? CJS.enc.Base64.stringify(h) : h.toString();
       },
-      aesEncrypt() { throw new Error('aesEncrypt not implemented in sandbox'); },
-      rsaEncrypt() { throw new Error('rsaEncrypt not implemented in sandbox'); },
+      sha256(str, format = 'hex') {
+        const h = CJS.SHA256(typeof str === 'string' ? str : toWA(str));
+        return format === 'base64' ? CJS.enc.Base64.stringify(h) : h.toString();
+      },
+      aesEncrypt(data, mode, key, iv, opts = {}) {
+        const cfg = {
+          mode: CJS.mode[MODES[mode] || 'CBC'],
+          padding: CJS.pad[PADS[opts.padding] || 'Pkcs7'],
+        };
+        if (iv) cfg.iv = toWA(iv);
+        const out = CJS.AES.encrypt(toWA(data), toWA(key), cfg);
+        return opts.output === 'hex'
+          ? out.ciphertext.toString(CJS.enc.Hex)
+          : out.toString(); // base64 (OpenSSL format minus salt for raw modes)
+      },
+      aesDecrypt(data, mode, key, iv, opts = {}) {
+        const cfg = {
+          mode: CJS.mode[MODES[mode] || 'CBC'],
+          padding: CJS.pad[PADS[opts.padding] || 'Pkcs7'],
+        };
+        if (iv) cfg.iv = toWA(iv);
+        const cipherParams = CJS.lib.CipherParams.create({ ciphertext: toWA(data) });
+        const out = CJS.AES.decrypt(cipherParams, toWA(key), cfg);
+        return CJS.enc.Utf8.stringify(out);
+      },
+      rsaEncrypt() {
+        // RSA needs a bigint impl crypto-js lacks; sources requiring it are rare.
+        throw new Error('rsaEncrypt not supported in sandbox');
+      },
       randomBytes(len) {
         const arr = new Uint8Array(len);
         crypto.getRandomValues(arr);
@@ -88,10 +133,25 @@
       },
     },
     zlib: {
-      inflate() { throw new Error('zlib.inflate not implemented — load pako'); },
-      deflate() { throw new Error('zlib.deflate not implemented — load pako'); },
+      inflate(data) { return PAKO.inflate(_toU8(data)); },
+      deflate(data) { return PAKO.deflate(_toU8(data)); },
+      gunzip(data)  { return PAKO.ungzip(_toU8(data)); },
+      gzip(data)    { return PAKO.gzip(_toU8(data)); },
     },
   };
+
+  function _toU8(data) {
+    if (data instanceof Uint8Array) return data;
+    if (typeof data === 'string') return new TextEncoder().encode(data);
+    if (data && data.words) {
+      // CryptoJS WordArray → Uint8Array
+      const { words, sigBytes } = data;
+      const u8 = new Uint8Array(sigBytes);
+      for (let i = 0; i < sigBytes; i++) u8[i] = (words[i >>> 2] >>> (24 - (i % 4) * 8)) & 0xff;
+      return u8;
+    }
+    return new Uint8Array(data);
+  }
 
   // Build the globalThis.lx object that scripts expect
   const lx = {
