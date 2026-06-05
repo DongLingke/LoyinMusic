@@ -70,6 +70,26 @@ const WALLPAPERS = {
   mono:     { name: '极简',  css: 'radial-gradient(at 30% 25%, #2a2a35 0%, transparent 55%), radial-gradient(at 75% 70%, #1c1c26 0%, transparent 55%), #0c0c12' },
 };
 
+// Bundled image wallpapers (ported from Daynote, optimized for web).
+const WALLPAPER_IMAGES = Array.from({ length: 14 }, (_, i) => `wp${String(i + 1).padStart(2, '0')}.jpg`);
+
+// Font choices (ported from Daynote).
+const FONTS = [
+  { key: 'system',    name: '系统',       css: '-apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif' },
+  { key: 'rounded',   name: '圆体',       css: '"SF Pro Rounded", ui-rounded, "Hiragino Maru Gothic ProN", "Hiragino Sans GB", system-ui, sans-serif' },
+  { key: 'serif',     name: '宋体',       css: 'Georgia, "Songti SC", "STSong", "SimSun", serif' },
+  { key: 'fangsong',  name: '仿宋',       css: '"FangSong", "STFangsong", "FangSong_GB2312", serif' },
+  { key: 'mono',      name: '等宽',       css: '"SF Mono", Menlo, Consolas, "Courier New", "PingFang SC", monospace' },
+  { key: 'humanist',  name: '人文无衬线', css: '"Optima", "Hiragino Sans GB", "PingFang SC", "Helvetica Neue", sans-serif' },
+];
+
+// Numeric card-adjustment settings → fallback defaults.
+const CARD_DEFAULTS = {
+  card_size: '80', card_opacity: '100', card_blur: '48', card_brightness: '104',
+  card_saturation: '180', card_radius: '26', card_aspect: '150', card_item_tint: '0',
+  font_size: '14', font_weight: '400', font_family: 'system',
+};
+
 // UI styles (ported from Daynote): each is a body.style-* class.
 const UI_STYLES = [
   { key: 'liquid-glass', name: '液态玻璃' },
@@ -95,36 +115,70 @@ const COLOR_SCHEMES = [
   { key: 'cherry',   name: '樱桃',     color: '#C0392B' },
 ];
 
-// Apply wallpaper + theme + UI style to the DOM. Reads state.settings.
+// Apply wallpaper + theme + UI style + card params to the DOM. Reads settings.
 function applyAppearance() {
   const s = state.settings;
-  const wpKey = s.wallpaper || 'aurora';
+  const html = document.documentElement;
+  const body = document.body;
+
+  // ── Wallpaper: custom URL > image file (wpNN.jpg) > gradient preset ──
   const wpEl = document.getElementById('wallpaper');
   if (wpEl) {
+    const wp = s.wallpaper || 'aurora';
     if (s.wallpaper_url) {
       wpEl.style.background = `url("${s.wallpaper_url}") center/cover no-repeat`;
+    } else if (/\.(jpg|jpeg|png|webp)$/i.test(wp)) {
+      wpEl.style.background = `url("/static/wallpapers/${wp}") center/cover no-repeat`;
     } else {
-      wpEl.style.background = (WALLPAPERS[wpKey] || WALLPAPERS.aurora).css;
+      wpEl.style.background = (WALLPAPERS[wp] || WALLPAPERS.aurora).css;
     }
   }
-  // Theme (dark default)
-  document.body.classList.toggle('theme-dark', s.theme !== 'light');
-  // UI style + color scheme — swap the body.style-* / scheme-* classes
-  document.body.className = document.body.className
-    .replace(/\bstyle-[\w-]+/g, '').replace(/\bscheme-[\w-]+/g, '').trim();
-  document.body.classList.add(`style-${s.ui_style || 'liquid-glass'}`);
-  const scheme = s.color_scheme || 'extract';
-  if (scheme !== 'extract') document.body.classList.add(`scheme-${scheme}`);
 
-  // Accent resolution:
-  //  - named scheme → CSS .scheme-* drives --accent; clear inline override
-  //  - extract      → cover extraction sets inline --accent (terminal excepted)
-  //  - terminal     → its CSS forces the signature accent regardless
+  // ── Theme ──
+  const isDark = s.theme !== 'light';
+  body.classList.toggle('theme-dark', isDark);
+
+  // ── UI style + color scheme classes ──
+  body.className = body.className
+    .replace(/\bstyle-[\w-]+/g, '').replace(/\bscheme-[\w-]+/g, '').trim();
+  body.classList.add(`style-${s.ui_style || 'liquid-glass'}`);
+  const scheme = s.color_scheme || 'extract';
+  if (scheme !== 'extract') body.classList.add(`scheme-${scheme}`);
   if (scheme !== 'extract' || s.ui_style === 'terminal') {
-    document.documentElement.style.removeProperty('--accent');
-    document.documentElement.style.removeProperty('--accent-hover');
-    document.documentElement.style.removeProperty('--accent-dim');
+    html.style.removeProperty('--accent');
+    html.style.removeProperty('--accent-hover');
+    html.style.removeProperty('--accent-dim');
   }
+
+  // ── Card sizing & glass parameters (ported from Daynote) ──
+  const g = k => s[k] || CARD_DEFAULTS[k];
+  body.classList.toggle('fullscreen-card', parseInt(g('card_size'), 10) >= 100);
+  html.style.setProperty('--card-size', g('card_size'));
+  html.style.setProperty('--card-opacity', (parseFloat(g('card_opacity')) / 100).toString());
+  const blurPx = parseFloat(g('card_blur'));
+  const sat = parseFloat(g('card_saturation')) / 100;
+  html.style.setProperty('--glass-blur', `${blurPx}px`);
+  html.style.setProperty('--glass-brightness', `${parseFloat(g('card_brightness')) / 100}`);
+  html.style.setProperty('--glass-sat', `${sat}`);
+  html.style.setProperty('--glass-blur-lg', `${(blurPx * 0.55).toFixed(2)}px`);
+  html.style.setProperty('--glass-sat-lg', `${(sat * 1.15).toFixed(3)}`);
+  html.style.setProperty('--radius-card', `${g('card_radius')}px`);
+  html.style.setProperty('--card-aspect', (parseFloat(g('card_aspect')) / 100).toString());
+
+  // Local-patch tint for items (helps readability on busy wallpapers)
+  const tint = parseInt(g('card_item_tint'), 10);
+  if (tint > 0) {
+    const a = (tint / 100 * 0.32).toFixed(3);
+    html.style.setProperty('--item-tint-extra', `rgba(${isDark ? '0,0,0' : '255,255,255'},${a})`);
+  } else {
+    html.style.removeProperty('--item-tint-extra');
+  }
+
+  // ── Fonts ──
+  const fnt = FONTS.find(f => f.key === g('font_family')) || FONTS[0];
+  html.style.setProperty('--font-size', `${g('font_size')}px`);
+  html.style.setProperty('--font-weight', g('font_weight'));
+  html.style.setProperty('--font-family', fnt.css);
 }
 
 // ── Utilities ─────────────────────────────────────────────────────
@@ -950,7 +1004,16 @@ function renderSettingsView() {
     <div class="settings-section-title">外观</div>
     <div class="settings-group">
       <div class="settings-row" style="flex-direction:column;align-items:stretch;gap:10px">
-        <div class="settings-row-label">壁纸</div>
+        <div class="settings-row-label">壁纸图片</div>
+        <div class="wp-img-grid">
+          ${WALLPAPER_IMAGES.map(fn => `
+            <div class="wp-img ${!s.wallpaper_url && curWp === fn ? 'active' : ''}"
+                 data-act="set-wallpaper" data-wp="${fn}">
+              <img src="/static/wallpapers/${fn}" loading="lazy" alt="">
+            </div>
+          `).join('')}
+        </div>
+        <div class="settings-row-label" style="margin-top:6px">渐变壁纸</div>
         <div class="wp-grid">
           ${Object.entries(WALLPAPERS).map(([key, wp]) => `
             <div class="wp-swatch ${!s.wallpaper_url && curWp === key ? 'active' : ''}"
@@ -999,6 +1062,50 @@ function renderSettingsView() {
         <div style="display:flex;gap:4px">
           <button class="btn ${s.theme !== 'light' ? 'btn-primary' : 'btn-ghost'}" data-act="set-theme" data-theme="dark" style="padding:4px 12px;font-size:0.8rem">深色</button>
           <button class="btn ${s.theme === 'light' ? 'btn-primary' : 'btn-ghost'}" data-act="set-theme" data-theme="light" style="padding:4px 12px;font-size:0.8rem">浅色</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+
+  // Card adjustments (ported from Daynote)
+  const cg = k => s[k] || CARD_DEFAULTS[k];
+  const slider = (k, label, min, max, unit, disp) => `
+    <div class="settings-row">
+      <div class="settings-row-label">${label}</div>
+      <input type="range" class="settings-slider" min="${min}" max="${max}" value="${cg(k)}" data-act="set-slider" data-k="${k}">
+      <span class="settings-slider-val" data-valfor="${k}">${disp ? disp(cg(k)) : cg(k) + (unit||'')}</span>
+    </div>`;
+  html += `<div class="settings-section">
+    <div class="settings-section-title">卡片</div>
+    <div class="settings-group">
+      ${slider('card_size', '尺寸', 50, 100, '%')}
+      ${slider('card_opacity', '不透明度', 40, 100, '%')}
+      ${slider('card_blur', '磨砂强度', 0, 120, 'px')}
+      ${slider('card_brightness', '明暗', 20, 200, '%')}
+      ${slider('card_saturation', '饱和度', 50, 200, '%')}
+      ${slider('card_radius', '圆角', 0, 60, 'px')}
+      ${slider('card_item_tint', '局部底纹', 0, 100, '%')}
+      ${slider('card_aspect', '宽高比', 100, 220, '', v => (parseFloat(v)/100).toFixed(2))}
+    </div>
+  </div>`;
+
+  // Fonts (ported from Daynote)
+  html += `<div class="settings-section">
+    <div class="settings-section-title">字体</div>
+    <div class="settings-group">
+      <div class="settings-row">
+        <div class="settings-row-label">字体</div>
+        <select class="settings-select" data-act="set-font">
+          ${FONTS.map(f => `<option value="${f.key}" ${cg('font_family')===f.key?'selected':''}>${f.name}</option>`).join('')}
+        </select>
+      </div>
+      ${slider('font_size', '字号', 11, 20, 'px')}
+      <div class="settings-row">
+        <div class="settings-row-label">字重</div>
+        <div style="display:flex;gap:4px">
+          ${[['300','细'],['400','常规'],['500','中'],['600','粗']].map(([v,n]) => `
+            <button class="btn ${cg('font_weight')===v?'btn-primary':'btn-ghost'}" data-act="set-weight" data-w="${v}" style="padding:4px 10px;font-size:0.8rem">${n}</button>
+          `).join('')}
         </div>
       </div>
     </div>
@@ -1496,6 +1603,39 @@ function bindViewEvents() {
     };
   });
 
+  // ── Card sliders: live preview on input, debounced save ─────────
+  document.querySelectorAll('[data-act="set-slider"]').forEach(sl => {
+    const k = sl.dataset.k;
+    sl.oninput = () => {
+      state.settings[k] = sl.value;
+      applyAppearance();
+      const val = document.querySelector(`[data-valfor="${k}"]`);
+      if (val) {
+        const unit = { card_blur: 'px', card_radius: 'px', font_size: 'px' }[k];
+        val.textContent = k === 'card_aspect'
+          ? (parseFloat(sl.value) / 100).toFixed(2)
+          : sl.value + (unit || (k === 'card_aspect' ? '' : '%'));
+      }
+      clearTimeout(_settingSaveTimer);
+      _settingSaveTimer = setTimeout(() => api.put('/settings', { [k]: sl.value }), 400);
+    };
+  });
+
+  document.querySelector('[data-act="set-font"]')?.addEventListener('change', async (e) => {
+    state.settings.font_family = e.target.value;
+    applyAppearance();
+    await api.put('/settings', { font_family: e.target.value });
+  });
+
+  document.querySelectorAll('[data-act="set-weight"]').forEach(btn => {
+    btn.onclick = async () => {
+      state.settings.font_weight = btn.dataset.w;
+      applyAppearance();
+      await api.put('/settings', { font_weight: btn.dataset.w });
+      render();
+    };
+  });
+
   // ── M9: Export / Import ─────────────────────────────────────────
   document.getElementById('btn-export')?.addEventListener('click', async () => {
     const data = await api.get('/export');
@@ -1599,6 +1739,7 @@ function bindViewEvents() {
 }
 
 // ── Scan polling ──────────────────────────────────────────────────
+let _settingSaveTimer = null;
 let _scanPoll = null;
 async function pollScan() {
   if (_scanPoll) return;
