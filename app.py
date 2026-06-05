@@ -923,9 +923,15 @@ def install_source():
         raw = d.get('raw_script', '')
     if not raw:
         return jsonify({'error': 'no_script'}), 400
+    # Parse JSDoc metadata from ONLY the first comment block (the source's own
+    # header). Scripts that bundle libraries (e.g. js-sha256) have their own
+    # @name/@version/@author blocks right after — don't let those clobber it.
+    end = raw.find('*/')
+    header = raw[:end] if 0 < end < 2000 else raw[:2000]
     meta = {}
-    for m in re.finditer(r'@(\w+)\s+(.+)', raw[:2000]):
-        meta[m.group(1)] = m.group(2).strip()
+    for m in re.finditer(r'@(\w+)\s+(.+)', header):
+        if m.group(1) not in meta:   # first occurrence wins
+            meta[m.group(1)] = m.group(2).strip()
     conn = get_db()
     cur = conn.execute(
         'INSERT INTO custom_sources (name, description, version, author, homepage, raw_script) VALUES (?,?,?,?,?,?)',

@@ -1780,10 +1780,13 @@ async function doOnlineSearch() {
     if (Array.isArray(itunes)) results.push(...itunes);
   } catch {}
 
-  // 2) Sandbox sources that implement a `search` action (full tracks)
+  // 2) Sandbox sources that implement a `search` action (full tracks).
+  // Only ask sources that actually declared `search` in their actions —
+  // standard LX sources only do musicUrl/lyric/pic, so skip them silently.
   const avail = window.sourceHost ? window.sourceHost.getAvailableSources() : {};
-  for (const sourceKey of Object.keys(avail)) {
+  for (const [sourceKey, info] of Object.entries(avail)) {
     if (sourceKey === 'local') continue;
+    if (!info.actions || !info.actions.includes('search')) continue;
     try {
       const data = await window.sourceHost.request(sourceKey, 'search',
         { keyword: q, page: 1, limit: 30 }, 12000);
