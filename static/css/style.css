@@ -915,3 +915,38 @@ input, textarea { font-family: inherit; }
 
   .np-cover { width: 180px; height: 180px; }
 }
+
+/* ── Playlist drag-and-drop reorder ──────────────────────────── */
+.drag-handle {
+  cursor: grab;
+  opacity: 0.4;
+  font-size: 0.9rem;
+  padding: 0 4px;
+  user-select: none;
+}
+.drag-handle:hover { opacity: 0.8; }
+.track-row.dragging {
+  opacity: 0.35;
+  background: var(--accent-dim) !important;
+}
+.track-row.drag-over {
+  border-top: 2px solid var(--accent) !important;
+}
+
+/* ── Reset buttons ───────────────────────────────────────────── */
+.reset-btn {
+  opacity: 0.5;
+  transition: opacity 0.2s;
+}
+.reset-btn:hover { opacity: 1; }
+
+/* ── Source badge in search results ──────────────────────────── */
+.kind-badge.online {
+  font-size: 0.65rem;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--accent-dim);
+  color: var(--accent);
+  vertical-align: middle;
+  margin-left: 4px;
+}

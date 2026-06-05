@@ -22,6 +22,8 @@ from io import BytesIO
 
 from flask import (Flask, jsonify, request, send_file, send_from_directory,
                    Response, render_template, abort)
+import requests as req_lib
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -378,6 +380,24 @@ def update_settings():
     conn.commit()
     conn.close()
     return jsonify({'ok': True})
+
+
+@app.route('/api/settings/defaults')
+def get_defaults():
+    """Return the default settings for reset-to-default UI."""
+    defaults = {
+        'theme': 'dark', 'ui_style': 'liquid-glass', 'color_scheme': 'extract',
+        'wallpaper': 'aurora', 'wallpaper_url': '',
+        'card_size': '80', 'card_opacity': '100', 'card_blur': '48',
+        'card_brightness': '104', 'card_saturation': '180', 'card_radius': '26',
+        'card_aspect': '150', 'card_item_tint': '0',
+        'font_size': '14', 'font_weight': '400', 'font_family': 'system',
+        'default_quality_online': '320k',
+        'quality_fallback_order': 'flac,flac24bit,320k,128k',
+        'volume': '80', 'repeat_mode': 'none', 'shuffle': 'false',
+        'lyric_show_translation': 'true', 'proxy_allow_outbound': 'true',
+    }
+    return jsonify(defaults)
 
 
 # ---------------------------------------------------------------------------
@@ -769,7 +789,7 @@ def add_online_track():
          cover_url, default_quality, url_cache, url_cache_at, url_cache_q)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
         (d.get('source', 'url'), d.get('source_id'),
-         json.dumps(d.get('source_meta')) if d.get('source_meta') else None,
+         d.get('source_meta') if isinstance(d.get('source_meta'), str) else (json.dumps(d.get('source_meta')) if d.get('source_meta') else None),
          d['title'], d.get('artist',''), d.get('album',''),
          d.get('duration_ms', 0), d.get('cover_url'),
          d.get('default_quality'), d.get('url', ''),
@@ -807,32 +827,215 @@ def delete_online_track(tid):
     return jsonify({'ok': True})
 
 
+# ---------------------------------------------------------------------------
+# Platform search adapters (server-side search for LX-compatible sources)
+# ---------------------------------------------------------------------------
+# Standard LX custom sources only declare musicUrl — search is the host app's
+# job.  These adapters query each platform's public search API and return
+# results with source_meta that the source script's musicUrl can consume.
+# ---------------------------------------------------------------------------
+_SEARCH_UA = ('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+              '(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36')
+
+
+def _search_wy(keyword, limit=30):
+    """网易云音乐"""
+    resp = req_lib.post(
+        'https://music.163.com/api/search/get/web',
+        data={'s': keyword, 'type': 1, 'offset': 0, 'limit': limit, 'total': 'true'},
+        headers={'User-Agent': _SEARCH_UA, 'Referer': 'https://music.163.com',
+                 'Content-Type': 'application/x-www-form-urlencoded'},
+        timeout=10,
+    )
+    data = resp.json()
+    out = []
+    for item in data.get('result', {}).get('songs', []):
+        sid = str(item.get('id', ''))
+        artists = ', '.join(a.get('name', '') for a in item.get('artists', []))
+        album = item.get('album', {})
+        img = album.get('picUrl', '') or album.get('blurPicUrl', '')
+        if img and '?' not in img:
+            img += '?param=300y300'
+        meta = {'name': item.get('name', ''), 'singer': artists, 'source': 'wy',
+                'songmid': sid, 'albumName': album.get('name', ''),
+                'albumId': str(album.get('id', '')), 'img': img}
+        out.append({
+            'source': 'wy', 'source_id': sid,
+            'title': item.get('name', ''), 'artist': artists,
+            'album': album.get('name', ''),
+            'duration_ms': item.get('duration', 0),
+            'cover_url': img,
+            'source_meta': json.dumps(meta),
+        })
+    return out
+
+
+def _search_kw(keyword, limit=30):
+    """酷我音乐 (uses the search.kuwo.cn/r.s endpoint — no CSRF needed)"""
+    import re as _re
+    resp = req_lib.get(
+        'http://search.kuwo.cn/r.s',
+        params={'all': keyword, 'ft': 'music', 'rn': str(limit), 'pn': '0',
+                'rformat': 'json', 'encoding': 'utf8', 'vipver': 'MUSIC_9.1.0'},
+        headers={'User-Agent': _SEARCH_UA},
+        timeout=10,
+    )
+    # Response uses single-quoted pseudo-JSON with HTML entities
+    text = resp.text.replace("'", '"').replace('&nbsp;', ' ')
+    data = json.loads(text)
+    out = []
+    for item in data.get('abslist', []):
+        musicrid = item.get('MUSICRID', '')
+        if musicrid.startswith('MUSIC_'):
+            musicrid = musicrid[6:]
+        songmid = musicrid or str(item.get('DC_TARGETID', ''))
+        artist = item.get('ARTIST', '')
+        img = item.get('web_albumpic_short', '') or item.get('hts_MVPIC', '')
+        if img and not img.startswith('http'):
+            img = 'https://img2.kuwo.cn/star/albumcover/' + img if img else ''
+        meta = {'name': item.get('SONGNAME', ''), 'singer': artist,
+                'source': 'kw', 'songmid': songmid, 'rid': songmid,
+                'albumName': item.get('ALBUM', ''),
+                'albumId': item.get('ALBUMID', ''),
+                'img': img}
+        out.append({
+            'source': 'kw', 'source_id': songmid,
+            'title': item.get('SONGNAME', ''), 'artist': artist,
+            'album': item.get('ALBUM', ''),
+            'duration_ms': int(item.get('DURATION', 0)) * 1000,
+            'cover_url': img,
+            'source_meta': json.dumps(meta),
+        })
+    return out
+
+
+def _search_tx(keyword, limit=30):
+    """QQ 音乐"""
+    resp = req_lib.get(
+        'https://c.y.qq.com/soso/fcgi-bin/client_search_cp',
+        params={'w': keyword, 'p': 1, 'n': limit, 'format': 'json'},
+        headers={'User-Agent': _SEARCH_UA, 'Referer': 'https://y.qq.com'},
+        timeout=10,
+    )
+    data = resp.json()
+    out = []
+    for item in data.get('data', {}).get('song', {}).get('list', []):
+        mid = item.get('songmid', '')
+        singer = ', '.join(s.get('name', '') for s in item.get('singer', []))
+        album_mid = item.get('albummid', '')
+        img = (f'https://y.gtimg.cn/music/photo_new/T002R300x300M000{album_mid}.jpg'
+               if album_mid else '')
+        meta = {'name': item.get('songname', ''), 'singer': singer, 'source': 'tx',
+                'songmid': mid, 'strMediaMid': item.get('strMediaMid', mid),
+                'albumName': item.get('albumname', ''),
+                'albumId': str(item.get('albumid', '')),
+                'albummid': album_mid, 'img': img,
+                'interval': item.get('interval', 0),
+                'songid': item.get('songid', '')}
+        out.append({
+            'source': 'tx', 'source_id': mid,
+            'title': item.get('songname', ''), 'artist': singer,
+            'album': item.get('albumname', ''),
+            'duration_ms': item.get('interval', 0) * 1000,
+            'cover_url': img,
+            'source_meta': json.dumps(meta),
+        })
+    return out
+
+
+def _search_kg(keyword, limit=30):
+    """酷狗音乐"""
+    resp = req_lib.get(
+        'http://mobilecdn.kugou.com/api/v3/search/song',
+        params={'keyword': keyword, 'page': 1, 'pagesize': limit, 'showtype': 1},
+        headers={'User-Agent': _SEARCH_UA},
+        timeout=10,
+    )
+    data = resp.json()
+    out = []
+    for item in data.get('data', {}).get('info', []):
+        h = item.get('hash', '')
+        meta = {'name': item.get('songname', ''), 'singer': item.get('singername', ''),
+                'source': 'kg', 'songmid': str(item.get('album_audio_id', h)),
+                'hash': h, 'sqhash': item.get('sqhash', ''),
+                '320hash': item.get('320hash', ''),
+                'albumName': item.get('album_name', ''),
+                'albumId': str(item.get('album_id', '')), 'img': ''}
+        out.append({
+            'source': 'kg', 'source_id': h,
+            'title': item.get('songname', ''), 'artist': item.get('singername', ''),
+            'album': item.get('album_name', ''),
+            'duration_ms': item.get('duration', 0) * 1000,
+            'cover_url': '',
+            'source_meta': json.dumps(meta),
+        })
+    return out
+
+
+def _search_mg(keyword, limit=30):
+    """咪咕音乐 (MIGUM2.0 search_all API)"""
+    resp = req_lib.get(
+        'https://app.c.nf.migu.cn/MIGUM2.0/v1.0/content/search_all.do',
+        params={'ua': 'Android_migu', 'version': '5.0.1', 'text': keyword,
+                'pageNo': 1, 'pageSize': limit,
+                'searchSwitch': json.dumps({'song': 1})},
+        headers={'User-Agent': _SEARCH_UA, 'Referer': 'https://m.music.migu.cn'},
+        timeout=10,
+    )
+    data = resp.json()
+    out = []
+    for item in data.get('songResultData', {}).get('result', []):
+        cid = str(item.get('copyrightId', item.get('id', '')))
+        singers = ', '.join(s.get('name', '') for s in item.get('singers', []))
+        albums = item.get('albums', [{}])
+        album_name = albums[0].get('albumName', '') if albums else ''
+        img = ''
+        if albums and albums[0].get('albumPicM'):
+            img = albums[0]['albumPicM']
+            if img.startswith('//'): img = 'https:' + img
+        meta = {'name': item.get('name', ''), 'singer': singers,
+                'source': 'mg', 'songmid': cid, 'copyrightId': cid,
+                'albumName': album_name, 'img': img}
+        out.append({
+            'source': 'mg', 'source_id': cid,
+            'title': item.get('name', ''), 'artist': singers,
+            'album': album_name,
+            'duration_ms': 0,
+            'cover_url': img,
+            'source_meta': json.dumps(meta),
+        })
+    return out
+
+
+_PLATFORM_SEARCH = {
+    'kw': _search_kw, 'wy': _search_wy, 'tx': _search_tx,
+    'kg': _search_kg, 'mg': _search_mg,
+}
+
+
 @app.route('/api/online/search')
 def online_search():
-    """Built-in search via iTunes Search API.
+    """Search music across iTunes + installed LX source platforms.
 
-    A public, key-free, CORS-friendly metadata API that returns title /
-    artist / album / artwork and a 30s preview URL — fully legal, no
-    versioned platform scraping. The preview URL is directly playable, so
-    search → play works end-to-end out of the box. Full-track sources come
-    from installed LX scripts via the sandbox's `search` action (frontend).
+    Accepts `sources` query param (comma-separated platform keys).
+    Runs all platform searches concurrently for low latency.
     """
-    import requests as req_lib
     keyword = request.args.get('q', '').strip()
     if not keyword:
         return jsonify([])
-    try:
+
+    sources_param = request.args.get('sources', 'itunes')
+    source_list = [s.strip() for s in sources_param.split(',') if s.strip()]
+
+    def _do_itunes():
         r = req_lib.get('https://itunes.apple.com/search', params={
-            'term': keyword, 'media': 'music', 'entity': 'song', 'limit': 30,
+            'term': keyword, 'media': 'music', 'entity': 'song', 'limit': 20,
         }, timeout=10)
         data = r.json()
-        results = []
+        out = []
         for item in data.get('results', []):
-            art = item.get('artworkUrl100', '')
-            # Upgrade artwork to higher res
-            if art:
-                art = art.replace('100x100', '300x300')
-            results.append({
+            art = item.get('artworkUrl100', '').replace('100x100', '300x300')
+            out.append({
                 'source': 'itunes',
                 'source_id': str(item.get('trackId', '')),
                 'title': item.get('trackName', ''),
@@ -840,12 +1043,30 @@ def online_search():
                 'album': item.get('collectionName', ''),
                 'duration_ms': item.get('trackTimeMillis', 0),
                 'cover_url': art,
-                'url_cache': item.get('previewUrl', ''),  # 30s preview, directly playable
+                'url_cache': item.get('previewUrl', ''),
                 'is_preview': True,
             })
-        return jsonify(results)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 502
+        return out
+
+    def _do_platform(platform):
+        fn = _PLATFORM_SEARCH.get(platform)
+        return fn(keyword) if fn else []
+
+    results = []
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = {}
+        for src in source_list:
+            if src == 'itunes':
+                futures[pool.submit(_do_itunes)] = 'itunes'
+            elif src in _PLATFORM_SEARCH:
+                futures[pool.submit(_do_platform, src)] = src
+        for future in as_completed(futures, timeout=15):
+            try:
+                results.extend(future.result())
+            except Exception as e:
+                print(f'{futures[future]} search error: {e}', file=sys.stderr)
+
+    return jsonify(results)
 
 
 @app.route('/api/online/import', methods=['POST'])
@@ -921,6 +1142,16 @@ def install_source():
     else:
         d = request.json or {}
         raw = d.get('raw_script', '')
+    if not raw:
+        # Try URL import
+        url = (request.json or {}).get('url', '') if not (request.content_type and 'multipart' in request.content_type) else ''
+        if url:
+            try:
+                resp = req_lib.get(url, headers={'User-Agent': _SEARCH_UA}, timeout=15)
+                resp.raise_for_status()
+                raw = resp.text
+            except Exception as e:
+                return jsonify({'error': f'fetch_failed: {e}'}), 400
     if not raw:
         return jsonify({'error': 'no_script'}), 400
     # Parse JSDoc metadata from ONLY the first comment block (the source's own

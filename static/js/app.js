@@ -401,9 +401,13 @@ const player = {
     if (track.kind === 'local') {
       url = `/api/local/stream/${track.id}`;
     } else {
-      // Online: try cached URL first, else resolve via source
+      // Online: try cached URL first — but check expiry (5 min)
       url = track.url_cache || '';
-      if (!url && track.source && track.source !== 'url') {
+      if (url && track.url_cache_at) {
+        const age = Date.now() - new Date(track.url_cache_at).getTime();
+        if (age > 5 * 60 * 1000) url = '';  // expired, re-resolve
+      }
+      if (!url && track.source && track.source !== 'url' && track.source !== 'itunes') {
         try {
           url = await this._resolveOnlineUrl(track);
         } catch { /* fall through */ }
@@ -432,8 +436,8 @@ const player = {
     const url = await window.sourceHost.request(track.source, 'musicUrl', {
       type: quality, musicInfo,
     });
-    // Cache it
-    if (url && track.id) {
+    // Cache it (only for DB-saved tracks with numeric IDs)
+    if (url && typeof track.id === 'number' && track.id > 0) {
       api.put(`/online/tracks/${track.id}`, {
         url_cache: url,
         url_cache_at: new Date().toISOString(),
@@ -546,7 +550,17 @@ const player = {
     document.getElementById('player-time-cur').textContent = '0:00';
     document.getElementById('player-progress').value = 0;
     const coverEl = document.getElementById('player-cover');
-    const src = coverUrl(track);
+    let src = coverUrl(track);
+    // #3 pic fallback: if no cover and source has 'pic' action, try it
+    if (!src && track.kind === 'online' && track.source && track.source !== 'url'
+        && track.source !== 'itunes' && window.sourceHost) {
+      this._resolveCover(track).then(url => {
+        if (!url) return;
+        coverEl.innerHTML = `<img src="${esc(url)}" alt="">`;
+        document.getElementById('np-cover-lg').innerHTML = `<img src="${esc(url)}" alt="">`;
+        extractAccentFromCover(url);
+      });
+    }
     coverEl.innerHTML = src ? `<img src="${esc(src)}" alt="">` : '';
     // Now-playing overlay
     const npCover = document.getElementById('np-cover-lg');
@@ -561,6 +575,21 @@ const player = {
     this._loadLyrics(track);
     // Load note (M9)
     this._loadNote(track);
+  },
+
+  async _resolveCover(track) {
+    try {
+      const info = track.source_meta ? JSON.parse(track.source_meta) : { songmid: track.source_id };
+      const url = await window.sourceHost.request(track.source, 'pic', { musicInfo: info }, 8000);
+      if (url && typeof url === 'string') {
+        // Cache it
+        if (typeof track.id === 'number' && track.id > 0) {
+          api.put(`/online/tracks/${track.id}`, { cover_url: url });
+        }
+        return url;
+      }
+    } catch {}
+    return null;
   },
 
   async _loadLyrics(track) {
@@ -904,9 +933,32 @@ function renderPlaylistsView() {
       ${items.length ? '<button class="btn btn-primary" id="btn-play-all">▶ 播放全部</button>' : ''}
     </div>`;
     if (items.length) {
-      html += renderTrackTable(items.map(it => ({
-        ...it, kind: it.track_kind, id: it.track_id,
-      })), true);
+      // Render with drag handles for reorder
+      html += `<table class="track-table playlist-sortable"><thead><tr>
+        <th style="width:24px"></th><th class="td-idx">#</th><th class="td-cover"></th>
+        <th class="td-title">标题</th><th class="td-artist">艺人</th>
+        <th class="td-album">专辑</th><th class="td-kind">来源</th>
+        <th class="td-duration">时长</th><th class="td-actions"></th>
+      </tr></thead><tbody>`;
+      items.forEach((t, i) => {
+        const kind = t.track_kind;
+        const id = t.track_id;
+        const cv = coverUrl(t);
+        html += `<tr class="track-row" draggable="true" data-kind="${kind}" data-id="${id}" data-pos="${i}">
+          <td class="drag-handle" title="拖拽排序">☰</td>
+          <td class="td-idx">${i + 1}</td>
+          <td class="td-cover">${cv ? `<img src="${esc(cv)}" loading="lazy">` : '<div style="width:28px;height:28px;border-radius:4px;background:var(--bg-hover)"></div>'}</td>
+          <td class="td-title"><span class="track-name">${esc(t.title || '')}</span></td>
+          <td class="td-artist">${esc(t.artist || '')}</td>
+          <td class="td-album">${esc(t.album || '')}</td>
+          <td class="td-kind">${kindBadge(kind)}</td>
+          <td class="td-duration">${fmtTime(t.duration_ms)}</td>
+          <td class="td-actions">
+            <button class="btn-tag-action" data-act="rm-from-playlist" data-pos="${i}" title="移除">✕</button>
+          </td>
+        </tr>`;
+      });
+      html += '</tbody></table>';
     } else {
       html += '<div style="padding:20px;color:var(--text-tertiary);text-align:center">歌单为空 — 在其他视图的曲目用 ➕ 加入这里</div>';
     }
@@ -1001,7 +1053,7 @@ function renderSettingsView() {
   // Appearance
   const curWp = s.wallpaper || 'aurora';
   html += `<div class="settings-section">
-    <div class="settings-section-title">外观</div>
+    <div class="settings-section-title">外观 <button class="btn btn-ghost reset-btn" data-act="reset-section" data-section="appearance" style="font-size:0.7rem;padding:2px 8px;margin-left:8px">恢复默认</button></div>
     <div class="settings-group">
       <div class="settings-row" style="flex-direction:column;align-items:stretch;gap:10px">
         <div class="settings-row-label">壁纸图片</div>
@@ -1076,7 +1128,7 @@ function renderSettingsView() {
       <span class="settings-slider-val" data-valfor="${k}">${disp ? disp(cg(k)) : cg(k) + (unit||'')}</span>
     </div>`;
   html += `<div class="settings-section">
-    <div class="settings-section-title">卡片</div>
+    <div class="settings-section-title">卡片 <button class="btn btn-ghost reset-btn" data-act="reset-section" data-section="card" style="font-size:0.7rem;padding:2px 8px;margin-left:8px">恢复默认</button></div>
     <div class="settings-group">
       ${slider('card_size', '尺寸', 50, 100, '%')}
       ${slider('card_opacity', '不透明度', 40, 100, '%')}
@@ -1091,7 +1143,7 @@ function renderSettingsView() {
 
   // Fonts (ported from Daynote)
   html += `<div class="settings-section">
-    <div class="settings-section-title">字体</div>
+    <div class="settings-section-title">字体 <button class="btn btn-ghost reset-btn" data-act="reset-section" data-section="font" style="font-size:0.7rem;padding:2px 8px;margin-left:8px">恢复默认</button></div>
     <div class="settings-group">
       <div class="settings-row">
         <div class="settings-row-label">字体</div>
@@ -1143,10 +1195,13 @@ function renderSettingsView() {
     <div class="settings-group">
       <div class="settings-row">
         <div><div class="settings-row-label">安装音源脚本</div>
-          <div class="settings-row-sub">上传洛雪兼容的 .js 音源文件</div></div>
-        <label class="btn btn-primary" style="cursor:pointer">
-          选择文件 <input type="file" accept=".js" id="source-file-input" style="display:none">
-        </label>
+          <div class="settings-row-sub">上传洛雪兼容的 .js 音源文件，或通过 URL 导入</div></div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-ghost" id="btn-source-url">URL 导入</button>
+          <label class="btn btn-primary" style="cursor:pointer">
+            选择文件 <input type="file" accept=".js" id="source-file-input" style="display:none">
+          </label>
+        </div>
       </div>`;
   if (state.sources.length) {
     state.sources.forEach(src => {
@@ -1169,7 +1224,7 @@ function renderSettingsView() {
 
   // Playback
   html += `<div class="settings-section">
-    <div class="settings-section-title">播放</div>
+    <div class="settings-section-title">播放 <button class="btn btn-ghost reset-btn" data-act="reset-section" data-section="playback" style="font-size:0.7rem;padding:2px 8px;margin-left:8px">恢复默认</button></div>
     <div class="settings-group">
       <div class="settings-row">
         <div class="settings-row-label">默认在线音质</div>
@@ -1459,10 +1514,12 @@ function bindViewEvents() {
       e.stopPropagation();
       const t = state.onlineSearchResults[parseInt(btn.dataset.searchIdx, 10)];
       if (!t) return;
+      // source_meta from backend is already a JSON string; backend handles both
       await api.post('/online/tracks', {
         source: t.source, source_id: t.source_id, title: t.title, artist: t.artist,
         album: t.album, duration_ms: t.duration_ms, cover_url: t.cover_url,
         url: t.url_cache || '', source_meta: t.source_meta,
+        default_quality: t.source !== 'itunes' ? '320k' : undefined,
       });
       state.onlineTracks = await api.get('/online/tracks');
       btn.textContent = '✓';
@@ -1503,6 +1560,52 @@ function bindViewEvents() {
     await api.put('/settings', { auto_scan_on_start: cur ? 'false' : 'true' });
     state.settings.auto_scan_on_start = cur ? 'false' : 'true';
     render();
+  });
+
+  // ── Settings: reset-to-default (#5) ────────────────────────────
+  document.querySelectorAll('[data-act="reset-section"]').forEach(btn => {
+    btn.onclick = async () => {
+      const section = btn.dataset.section;
+      const SECTION_KEYS = {
+        appearance: ['theme', 'ui_style', 'color_scheme', 'wallpaper', 'wallpaper_url'],
+        card: ['card_size', 'card_opacity', 'card_blur', 'card_brightness',
+               'card_saturation', 'card_radius', 'card_aspect', 'card_item_tint'],
+        font: ['font_size', 'font_weight', 'font_family'],
+        playback: ['default_quality_online', 'volume', 'repeat_mode', 'shuffle'],
+      };
+      const keys = SECTION_KEYS[section];
+      if (!keys) return;
+      try {
+        const defaults = await api.get('/settings/defaults');
+        const patch = {};
+        for (const k of keys) { if (defaults[k] !== undefined) patch[k] = defaults[k]; }
+        await api.put('/settings', patch);
+        Object.assign(state.settings, patch);
+        applyAppearance();
+        if (section === 'playback') {
+          const vol = parseInt(patch.volume || '80', 10);
+          document.getElementById('volume-slider').value = vol;
+          player.audio.volume = vol / 100;
+          player.shuffle = patch.shuffle === 'true';
+          player.repeat = patch.repeat_mode || 'none';
+          player._updateModeButtons();
+        }
+        render();
+      } catch {}
+    };
+  });
+
+  // ── Settings: source URL import ───────────────────────────────
+  document.getElementById('btn-source-url')?.addEventListener('click', async () => {
+    const url = prompt('输入音源脚本 URL\n例如 GitHub raw 链接');
+    if (!url?.trim()) return;
+    try {
+      const r = await api.post('/sources', { url: url.trim() });
+      if (r.error) { alert('导入失败: ' + r.error); return; }
+      state.sources = await api.get('/sources');
+      try { await window.sourceHost.loadAll(); } catch {}
+      render();
+    } catch (e) { alert('导入失败: ' + e.message); }
   });
 
   // ── Settings: sources (M4) ────────────────────────────────────
@@ -1714,6 +1817,65 @@ function bindViewEvents() {
     };
   });
 
+  // ── #1: Playlist drag-to-reorder ────────────────────────────────
+  const sortable = document.querySelector('.playlist-sortable tbody');
+  if (sortable) {
+    let dragRow = null;
+    sortable.querySelectorAll('tr[draggable]').forEach(row => {
+      row.addEventListener('dragstart', (e) => {
+        dragRow = row;
+        row.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+      });
+      row.addEventListener('dragend', () => {
+        row.classList.remove('dragging');
+        dragRow = null;
+        sortable.querySelectorAll('.drag-over').forEach(r => r.classList.remove('drag-over'));
+      });
+      row.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        if (row !== dragRow) {
+          sortable.querySelectorAll('.drag-over').forEach(r => r.classList.remove('drag-over'));
+          row.classList.add('drag-over');
+        }
+      });
+      row.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        if (!dragRow || row === dragRow) return;
+        // Reorder: move dragRow before/after this row
+        const rows = [...sortable.querySelectorAll('tr[draggable]')];
+        const fromIdx = rows.indexOf(dragRow);
+        const toIdx = rows.indexOf(row);
+        if (fromIdx < 0 || toIdx < 0) return;
+        // Reorder items in state
+        const items = state.activePlaylist.items;
+        const [moved] = items.splice(fromIdx, 1);
+        items.splice(toIdx, 0, moved);
+        // Save to backend
+        await api.put(`/playlists/${state.activePlaylist.playlist.id}/items`, {
+          items: items.map(it => ({ track_kind: it.track_kind, track_id: it.track_id })),
+        });
+        render();
+      });
+    });
+  }
+
+  // Playlist item removal
+  document.querySelectorAll('[data-act="rm-from-playlist"]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const pos = parseInt(btn.dataset.pos, 10);
+      const items = state.activePlaylist.items;
+      items.splice(pos, 1);
+      await api.put(`/playlists/${state.activePlaylist.playlist.id}/items`, {
+        items: items.map(it => ({ track_kind: it.track_kind, track_id: it.track_id })),
+      });
+      state.playlists = await api.get('/playlists');
+      render();
+    };
+  });
+
   // ── M8: History calendar ───────────────────────────────────────
   document.querySelectorAll('[data-act="cal-select"]').forEach(el => {
     el.onclick = async () => {
@@ -1768,46 +1930,22 @@ async function loadHistoryMonth() {
 }
 
 // ── Now-playing overlay ──────────────────────────────────────────
-// ── Online search: built-in iTunes + sandbox sources ─────────────
+// ── Online search: backend-driven (iTunes + platform adapters) ───
 async function doOnlineSearch() {
   const q = state.searchQuery.trim();
   if (!q) return;
-  const results = [];
 
-  // 1) Built-in iTunes search (always available, 30s previews)
-  try {
-    const itunes = await api.get(`/online/search?q=${encodeURIComponent(q)}`);
-    if (Array.isArray(itunes)) results.push(...itunes);
-  } catch {}
-
-  // 2) Sandbox sources that implement a `search` action (full tracks).
-  // Only ask sources that actually declared `search` in their actions —
-  // standard LX sources only do musicUrl/lyric/pic, so skip them silently.
+  // Build sources list: always iTunes + any installed LX source platforms
   const avail = window.sourceHost ? window.sourceHost.getAvailableSources() : {};
-  for (const [sourceKey, info] of Object.entries(avail)) {
-    if (sourceKey === 'local') continue;
-    if (!info.actions || !info.actions.includes('search')) continue;
-    try {
-      const data = await window.sourceHost.request(sourceKey, 'search',
-        { keyword: q, page: 1, limit: 30 }, 12000);
-      const list = Array.isArray(data) ? data : (data && data.list) || [];
-      for (const it of list) {
-        results.push({
-          source: sourceKey,
-          source_id: String(it.songmid || it.id || ''),
-          source_meta: JSON.stringify(it),
-          title: it.name || it.title || '',
-          artist: it.singer || it.artist || '',
-          album: it.albumName || it.album || '',
-          duration_ms: (it.interval ? _parseDur(it.interval) : it.duration_ms) || 0,
-          cover_url: it.img || it.cover_url || '',
-          url_cache: '',
-        });
-      }
-    } catch { /* source has no search action */ }
-  }
+  const platformKeys = Object.keys(avail).filter(k => k !== 'local');
+  const sources = ['itunes', ...platformKeys].join(',');
 
-  state.onlineSearchResults = results;
+  try {
+    const data = await api.get(`/online/search?q=${encodeURIComponent(q)}&sources=${sources}`);
+    state.onlineSearchResults = Array.isArray(data) ? data : [];
+  } catch {
+    state.onlineSearchResults = [];
+  }
   render();
 }
 
