@@ -70,7 +70,15 @@ const WALLPAPERS = {
   mono:     { name: '极简',  css: 'radial-gradient(at 30% 25%, #2a2a35 0%, transparent 55%), radial-gradient(at 75% 70%, #1c1c26 0%, transparent 55%), #0c0c12' },
 };
 
-// Apply wallpaper + theme to the DOM. Reads state.settings.
+// UI styles (like Daynote): each is a body.style-* class overriding the look.
+const UI_STYLES = [
+  { key: 'liquid-glass', name: '液态玻璃' },
+  { key: 'flat',         name: '扁平' },
+  { key: 'paper',        name: '纸张' },
+  { key: 'neon',         name: '霓虹' },
+];
+
+// Apply wallpaper + theme + UI style to the DOM. Reads state.settings.
 function applyAppearance() {
   const s = state.settings;
   const wpKey = s.wallpaper || 'aurora';
@@ -84,6 +92,16 @@ function applyAppearance() {
   }
   // Theme (dark default)
   document.body.classList.toggle('theme-dark', s.theme !== 'light');
+  // UI style — swap the body.style-* class
+  document.body.className = document.body.className.replace(/\bstyle-[\w-]+/g, '').trim();
+  document.body.classList.add(`style-${s.ui_style || 'liquid-glass'}`);
+  // Paper & neon have signature accents; clear any cover-extracted override
+  // so their CSS-defined accent shows until a track is played.
+  if (s.ui_style === 'paper' || s.ui_style === 'neon') {
+    document.documentElement.style.removeProperty('--accent');
+    document.documentElement.style.removeProperty('--accent-hover');
+    document.documentElement.style.removeProperty('--accent-dim');
+  }
 }
 
 // ── Utilities ─────────────────────────────────────────────────────
@@ -137,6 +155,8 @@ function parseLrc(lrcText, tlyricText) {
 // ── Cover accent color extraction (M6) ────────────────────────
 function extractAccentFromCover(imgSrc) {
   if (!imgSrc) return;
+  // Neon keeps its signature cyan; don't let covers override it.
+  if (state.settings.ui_style === 'neon') return;
   const img = new Image();
   img.crossOrigin = 'anonymous';
   img.onload = () => {
@@ -925,6 +945,18 @@ function renderSettingsView() {
         <div class="settings-row-sub" style="word-break:break-all;flex:1">${esc(s.wallpaper_url)}</div>
         <button class="btn btn-ghost" style="color:var(--danger)" id="btn-clear-wp-url">清除</button>
       </div>` : ''}
+      <div class="settings-row" style="flex-direction:column;align-items:stretch;gap:8px">
+        <div class="settings-row-label">界面风格</div>
+        <div class="style-grid">
+          ${UI_STYLES.map(st => `
+            <div class="style-swatch ${(s.ui_style||'liquid-glass')===st.key?'active':''} preview-${st.key}"
+                 data-act="set-style" data-style="${st.key}">
+              <div class="style-swatch-demo"><span class="sw-card"></span></div>
+              <div class="style-swatch-name">${st.name}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
       <div class="settings-row">
         <div class="settings-row-label">主题</div>
         <div style="display:flex;gap:4px">
@@ -1399,6 +1431,15 @@ function bindViewEvents() {
     btn.onclick = async () => {
       await api.put('/settings', { theme: btn.dataset.theme });
       state.settings.theme = btn.dataset.theme;
+      applyAppearance();
+      render();
+    };
+  });
+
+  document.querySelectorAll('[data-act="set-style"]').forEach(el => {
+    el.onclick = async () => {
+      await api.put('/settings', { ui_style: el.dataset.style });
+      state.settings.ui_style = el.dataset.style;
       applyAppearance();
       render();
     };

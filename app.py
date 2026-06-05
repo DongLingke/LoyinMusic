@@ -171,6 +171,7 @@ def init_db():
     # Default settings
     defaults = {
         'theme': 'dark',
+        'ui_style': 'liquid-glass',
         'wallpaper': 'aurora',
         'wallpaper_url': '',
         'scan_folders': '[]',
