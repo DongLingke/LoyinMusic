@@ -70,12 +70,29 @@ const WALLPAPERS = {
   mono:     { name: '极简',  css: 'radial-gradient(at 30% 25%, #2a2a35 0%, transparent 55%), radial-gradient(at 75% 70%, #1c1c26 0%, transparent 55%), #0c0c12' },
 };
 
-// UI styles (like Daynote): each is a body.style-* class overriding the look.
+// UI styles (ported from Daynote): each is a body.style-* class.
 const UI_STYLES = [
   { key: 'liquid-glass', name: '液态玻璃' },
   { key: 'flat',         name: '扁平' },
   { key: 'paper',        name: '纸张' },
-  { key: 'neon',         name: '霓虹' },
+  { key: 'terminal',     name: '终端' },
+];
+
+// Color schemes (ported from Daynote). 'extract' = derive accent from cover.
+const COLOR_SCHEMES = [
+  { key: 'extract',  name: '自动取色', color: '#888888' },
+  { key: 'ocean',    name: '海洋',     color: '#0A84FF' },
+  { key: 'morandi',  name: '莫兰迪',   color: '#8B7D6B' },
+  { key: 'sakura',   name: '樱花',     color: '#E8829A' },
+  { key: 'forest',   name: '森林',     color: '#30A84E' },
+  { key: 'sunset',   name: '日落',     color: '#FF6B35' },
+  { key: 'lavender', name: '薰衣草',   color: '#9B7BC9' },
+  { key: 'mint',     name: '薄荷',     color: '#3DC4A0' },
+  { key: 'rose',     name: '玫瑰',     color: '#D24A6B' },
+  { key: 'amber',    name: '琥珀',     color: '#C77F2D' },
+  { key: 'graphite', name: '石墨',     color: '#5C5C66' },
+  { key: 'sky',      name: '天空',     color: '#56A0C7' },
+  { key: 'cherry',   name: '樱桃',     color: '#C0392B' },
 ];
 
 // Apply wallpaper + theme + UI style to the DOM. Reads state.settings.
@@ -92,12 +109,18 @@ function applyAppearance() {
   }
   // Theme (dark default)
   document.body.classList.toggle('theme-dark', s.theme !== 'light');
-  // UI style — swap the body.style-* class
-  document.body.className = document.body.className.replace(/\bstyle-[\w-]+/g, '').trim();
+  // UI style + color scheme — swap the body.style-* / scheme-* classes
+  document.body.className = document.body.className
+    .replace(/\bstyle-[\w-]+/g, '').replace(/\bscheme-[\w-]+/g, '').trim();
   document.body.classList.add(`style-${s.ui_style || 'liquid-glass'}`);
-  // Paper & neon have signature accents; clear any cover-extracted override
-  // so their CSS-defined accent shows until a track is played.
-  if (s.ui_style === 'paper' || s.ui_style === 'neon') {
+  const scheme = s.color_scheme || 'extract';
+  if (scheme !== 'extract') document.body.classList.add(`scheme-${scheme}`);
+
+  // Accent resolution:
+  //  - named scheme → CSS .scheme-* drives --accent; clear inline override
+  //  - extract      → cover extraction sets inline --accent (terminal excepted)
+  //  - terminal     → its CSS forces the signature accent regardless
+  if (scheme !== 'extract' || s.ui_style === 'terminal') {
     document.documentElement.style.removeProperty('--accent');
     document.documentElement.style.removeProperty('--accent-hover');
     document.documentElement.style.removeProperty('--accent-dim');
@@ -155,8 +178,10 @@ function parseLrc(lrcText, tlyricText) {
 // ── Cover accent color extraction (M6) ────────────────────────
 function extractAccentFromCover(imgSrc) {
   if (!imgSrc) return;
-  // Neon keeps its signature cyan; don't let covers override it.
-  if (state.settings.ui_style === 'neon') return;
+  // Only when the color scheme is "extract"; named schemes / terminal own
+  // their accent.
+  if ((state.settings.color_scheme || 'extract') !== 'extract') return;
+  if (state.settings.ui_style === 'terminal') return;
   const img = new Image();
   img.crossOrigin = 'anonymous';
   img.onload = () => {
@@ -957,6 +982,18 @@ function renderSettingsView() {
           `).join('')}
         </div>
       </div>
+      <div class="settings-row" style="flex-direction:column;align-items:stretch;gap:8px">
+        <div class="settings-row-label">配色方案</div>
+        <div class="scheme-grid">
+          ${COLOR_SCHEMES.map(c => `
+            <div class="scheme-chip ${(s.color_scheme||'extract')===c.key?'active':''}"
+                 data-act="set-scheme" data-scheme="${c.key}">
+              <span class="scheme-dot" style="background:${c.key==='extract' ? 'conic-gradient(#ff6b35,#0a84ff,#30a84e,#e8829a,#ff6b35)' : c.color}"></span>
+              ${c.name}
+            </div>
+          `).join('')}
+        </div>
+      </div>
       <div class="settings-row">
         <div class="settings-row-label">主题</div>
         <div style="display:flex;gap:4px">
@@ -1441,6 +1478,20 @@ function bindViewEvents() {
       await api.put('/settings', { ui_style: el.dataset.style });
       state.settings.ui_style = el.dataset.style;
       applyAppearance();
+      // Re-tint from the current cover if scheme is 'extract'
+      if (player._currentTrack) extractAccentFromCover(coverUrl(player._currentTrack));
+      render();
+    };
+  });
+
+  document.querySelectorAll('[data-act="set-scheme"]').forEach(el => {
+    el.onclick = async () => {
+      await api.put('/settings', { color_scheme: el.dataset.scheme });
+      state.settings.color_scheme = el.dataset.scheme;
+      applyAppearance();
+      if (el.dataset.scheme === 'extract' && player._currentTrack) {
+        extractAccentFromCover(coverUrl(player._currentTrack));
+      }
       render();
     };
   });
