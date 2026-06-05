@@ -104,17 +104,34 @@ function coverUrl(track) {
   return null;
 }
 // ── LRC lyrics parser (M6) ─────────────────────────────────────
-function parseLrc(lrcText) {
+// Parses an LRC string into [{time, text}]. A line may carry several
+// timestamps ([t1][t2]text) — each becomes its own entry.
+function parseLrcRaw(lrcText) {
   if (!lrcText) return [];
-  const lines = [];
+  const out = [];
   lrcText.split('\n').forEach(line => {
-    const m = line.match(/^\[(\d{2}):(\d{2})(?:\.(\d{2,3}))?\](.*)/);
-    if (m) {
-      const t = parseInt(m[1]) * 60 + parseInt(m[2]) + (parseInt(m[3] || 0) / (m[3]?.length === 3 ? 1000 : 100));
-      lines.push({ time: t, text: m[4].trim() });
+    const stamps = [...line.matchAll(/\[(\d{1,2}):(\d{2})(?:[.:](\d{2,3}))?\]/g)];
+    if (!stamps.length) return;
+    const text = line.replace(/\[[^\]]*\]/g, '').trim();
+    for (const m of stamps) {
+      const frac = m[3] ? parseInt(m[3]) / (m[3].length === 3 ? 1000 : 100) : 0;
+      out.push({ time: parseInt(m[1]) * 60 + parseInt(m[2]) + frac, text });
     }
   });
-  return lines.sort((a, b) => a.time - b.time);
+  return out.sort((a, b) => a.time - b.time);
+}
+
+// Merge a main LRC with an optional translation LRC (tlyric). Lines with
+// matching timestamps get a `.trans` field shown under the original.
+function parseLrc(lrcText, tlyricText) {
+  const main = parseLrcRaw(lrcText);
+  if (!tlyricText || state.settings.lyric_show_translation === 'false') return main;
+  const trans = parseLrcRaw(tlyricText);
+  for (const line of main) {
+    const match = trans.find(t => Math.abs(t.time - line.time) < 0.3 && t.text);
+    if (match) line.trans = match.text;
+  }
+  return main;
 }
 
 // ── Cover accent color extraction (M6) ────────────────────────
@@ -159,6 +176,9 @@ const player = {
   current: -1,
   playing: false,
   _startTime: 0,
+  shuffle: false,
+  repeat: 'none',   // 'none' | 'all' | 'one'
+  _saveTimer: null,
 
   init() {
     this.audio = document.getElementById('audio-el');
@@ -171,6 +191,12 @@ const player = {
     document.getElementById('btn-play').onclick = () => this.togglePlay();
     document.getElementById('btn-prev').onclick = () => this.prev();
     document.getElementById('btn-next').onclick = () => this.next();
+    document.getElementById('btn-shuffle').onclick = () => this.toggleShuffle();
+    document.getElementById('btn-repeat').onclick = () => this.cycleRepeat();
+    document.getElementById('btn-queue').onclick = () => this.toggleQueuePanel();
+    document.getElementById('btn-clear-queue').onclick = () => {
+      this.queue = []; this.current = -1; this._renderQueue(); this._saveLast();
+    };
 
     const prog = document.getElementById('player-progress');
     prog.addEventListener('input', () => {
@@ -188,6 +214,9 @@ const player = {
       const v = parseInt(s.volume || '80', 10);
       vol.value = v;
       this.audio.volume = v / 100;
+      this.shuffle = s.shuffle === 'true';
+      this.repeat = s.repeat_mode || 'none';
+      this._updateModeButtons();
     });
 
     if ('mediaSession' in navigator) {
@@ -199,6 +228,67 @@ const player = {
         if (d.seekTime != null) this.audio.currentTime = d.seekTime;
       });
     }
+  },
+
+  toggleShuffle() {
+    this.shuffle = !this.shuffle;
+    api.put('/settings', { shuffle: String(this.shuffle) });
+    this._updateModeButtons();
+  },
+  cycleRepeat() {
+    this.repeat = { none: 'all', all: 'one', one: 'none' }[this.repeat];
+    api.put('/settings', { repeat_mode: this.repeat });
+    this._updateModeButtons();
+  },
+  _updateModeButtons() {
+    const sb = document.getElementById('btn-shuffle');
+    const rb = document.getElementById('btn-repeat');
+    if (sb) sb.classList.toggle('on', this.shuffle);
+    if (rb) {
+      rb.classList.toggle('on', this.repeat !== 'none');
+      rb.textContent = this.repeat === 'one' ? '🔂' : '🔁';
+      rb.title = { none: '循环：关', all: '循环：列表', one: '循环：单曲' }[this.repeat];
+    }
+  },
+
+  toggleQueuePanel() {
+    const p = document.getElementById('queue-panel');
+    p.classList.toggle('hidden');
+    if (!p.classList.contains('hidden')) this._renderQueue();
+  },
+  _renderQueue() {
+    const el = document.getElementById('queue-list');
+    if (!el) return;
+    if (!this.queue.length) {
+      el.innerHTML = '<div style="padding:16px;color:var(--text-tertiary);text-align:center;font-size:0.8rem">队列为空</div>';
+      return;
+    }
+    el.innerHTML = this.queue.map((t, i) => `
+      <div class="queue-item ${i === this.current ? 'current' : ''}" data-qi="${i}">
+        <span class="queue-item-idx">${i === this.current ? '🔊' : i + 1}</span>
+        <div class="queue-item-meta">
+          <div class="queue-item-title">${esc(t.title || '未知')}</div>
+          <div class="queue-item-artist">${esc(t.artist || '')}</div>
+        </div>
+        <button class="queue-item-rm" data-qrm="${i}" title="移除">✕</button>
+      </div>`).join('');
+    el.querySelectorAll('.queue-item').forEach(item => {
+      item.onclick = (e) => {
+        if (e.target.closest('[data-qrm]')) return;
+        const i = parseInt(item.dataset.qi, 10);
+        this.current = i; this._load(this.queue[i]); this._renderQueue();
+      };
+    });
+    el.querySelectorAll('[data-qrm]').forEach(btn => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
+        const i = parseInt(btn.dataset.qrm, 10);
+        this.queue.splice(i, 1);
+        if (i < this.current) this.current--;
+        else if (i === this.current) this.current = Math.min(this.current, this.queue.length - 1);
+        this._renderQueue(); this._saveLast();
+      };
+    });
   },
 
   playTrack(track, queue, idx) {
@@ -231,6 +321,9 @@ const player = {
       r.classList.toggle('playing',
         r.dataset.kind === track.kind && r.dataset.id === String(track.id));
     });
+    const qp = document.getElementById('queue-panel');
+    if (qp && !qp.classList.contains('hidden')) this._renderQueue();
+    this._saveLast();
   },
 
   async _resolveOnlineUrl(track) {
@@ -252,15 +345,28 @@ const player = {
   },
 
   togglePlay() { if (!this.audio.src) return; this.audio.paused ? this.audio.play() : this.audio.pause(); },
-  next() {
+
+  _nextIndex() {
+    if (this.queue.length <= 1) return this.current;
+    if (this.shuffle) {
+      let i; do { i = Math.floor(Math.random() * this.queue.length); } while (i === this.current);
+      return i;
+    }
+    return (this.current + 1) % this.queue.length;
+  },
+  next(auto = false) {
     if (!this.queue.length) return;
-    this.current = (this.current + 1) % this.queue.length;
+    // auto = triggered by track ending (respects repeat-none stop-at-end)
+    if (auto && this.repeat === 'none' && !this.shuffle && this.current === this.queue.length - 1) {
+      this.playing = false; this._updatePlayBtn(); return;
+    }
+    this.current = this._nextIndex();
     this._load(this.queue[this.current]);
   },
   prev() {
     if (!this.queue.length) return;
     if (this.audio.currentTime > 3) { this.audio.currentTime = 0; return; }
-    this.current = (this.current - 1 + this.queue.length) % this.queue.length;
+    this.current = this.shuffle ? this._nextIndex() : (this.current - 1 + this.queue.length) % this.queue.length;
     this._load(this.queue[this.current]);
   },
 
@@ -273,7 +379,48 @@ const player = {
         duration_played: played, completed: played > (track.duration_ms || 0) * 0.8 ? 1 : 0,
       });
     }
-    this.next();
+    if (this.repeat === 'one') { this._load(this.queue[this.current]); return; }
+    this.next(true);
+  },
+
+  // Persist queue + position so playback resumes after reload (debounced)
+  _saveLast() {
+    clearTimeout(this._saveTimer);
+    this._saveTimer = setTimeout(() => {
+      const payload = {
+        queue: this.queue.map(t => ({ kind: t.kind, id: t.id, title: t.title, artist: t.artist,
+          album: t.album, duration_ms: t.duration_ms, cover_hash: t.cover_hash, cover_url: t.cover_url,
+          source: t.source, source_id: t.source_id, source_meta: t.source_meta, url_cache: t.url_cache })),
+        current: this.current,
+        time: Math.floor(this.audio.currentTime || 0),
+      };
+      api.put('/settings', { last_playing: JSON.stringify(payload) });
+    }, 1500);
+  },
+
+  // Restore queue on boot WITHOUT autoplaying (browsers block autoplay anyway)
+  restoreLast() {
+    try {
+      const raw = state.settings.last_playing;
+      if (!raw) return;
+      const d = JSON.parse(raw);
+      if (!d.queue || !d.queue.length) return;
+      this.queue = d.queue;
+      this.current = d.current ?? 0;
+      const track = this.queue[this.current];
+      if (!track) return;
+      this._currentTrack = track;
+      this._updateBar(track);
+      this._updateMediaSession(track);
+      // Prime the audio src + seek position, but stay paused
+      const url = track.kind === 'local' ? `/api/local/stream/${track.id}` : (track.url_cache || '');
+      if (url) {
+        this.audio.src = url;
+        this.audio.addEventListener('loadedmetadata', () => {
+          if (d.time) this.audio.currentTime = d.time;
+        }, { once: true });
+      }
+    } catch {}
   },
   _onError() {
     console.warn('playback error, skipping');
@@ -319,18 +466,18 @@ const player = {
 
   async _loadLyrics(track) {
     let lrc = track.lyric_cache || '';
+    let tlyric = '';
     // Try fetching from source sandbox
     if (!lrc && track.kind === 'online' && track.source && track.source !== 'url' && window.sourceHost) {
       try {
         const info = track.source_meta ? JSON.parse(track.source_meta) : { songmid: track.source_id };
         const result = await window.sourceHost.request(track.source, 'lyric', { musicInfo: info });
-        if (result && typeof result === 'object') lrc = result.lyric || '';
+        if (result && typeof result === 'object') { lrc = result.lyric || ''; tlyric = result.tlyric || ''; }
         else if (typeof result === 'string') lrc = result;
-        // Cache it
         if (lrc && track.id) api.put(`/online/tracks/${track.id}`, { lyric_cache: lrc });
       } catch {}
     }
-    this.lyrics = parseLrc(lrc);
+    this.lyrics = parseLrc(lrc, tlyric);
     this._renderLyrics();
   },
 
@@ -342,7 +489,7 @@ const player = {
       return;
     }
     el.innerHTML = this.lyrics.map((l, i) =>
-      `<div class="lyric-line" data-lyric-idx="${i}">${esc(l.text || '···')}</div>`
+      `<div class="lyric-line" data-lyric-idx="${i}">${esc(l.text || '···')}${l.trans ? `<div class="lyric-trans">${esc(l.trans)}</div>` : ''}</div>`
     ).join('');
   },
 
@@ -655,13 +802,14 @@ function renderPlaylistsView() {
       <button class="btn btn-ghost" id="btn-back-playlists">← 返回</button>
       <span class="view-title" style="font-size:1.2rem">${esc(playlist.name)}</span>
       <span class="count">(${items.length})</span>
+      ${items.length ? '<button class="btn btn-primary" id="btn-play-all">▶ 播放全部</button>' : ''}
     </div>`;
     if (items.length) {
       html += renderTrackTable(items.map(it => ({
         ...it, kind: it.track_kind, id: it.track_id,
       })), true);
     } else {
-      html += '<div style="padding:20px;color:var(--text-tertiary);text-align:center">歌单为空 — 在其他视图的曲目上右键可添加到歌单</div>';
+      html += '<div style="padding:20px;color:var(--text-tertiary);text-align:center">歌单为空 — 在其他视图的曲目用 ➕ 加入这里</div>';
     }
     return html;
   }
@@ -1296,6 +1444,13 @@ function bindViewEvents() {
     render();
   });
 
+  document.getElementById('btn-play-all')?.addEventListener('click', () => {
+    const items = state.activePlaylist?.items || [];
+    if (!items.length) return;
+    const queue = items.map(it => ({ ...it, kind: it.track_kind, id: it.track_id }));
+    player.playTrack(queue[0], queue, 0);
+  });
+
   document.querySelectorAll('[data-act="open-playlist"]').forEach(el => {
     el.onclick = async (e) => {
       if (e.target.closest('[data-act="rename-playlist"]') || e.target.closest('[data-act="del-playlist"]')) return;
@@ -1484,6 +1639,7 @@ async function boot() {
   state.playlists = playlists;
 
   applyAppearance();
+  player.restoreLast();
 
   // Pre-load today's history
   const today = new Date().toISOString().slice(0, 10);

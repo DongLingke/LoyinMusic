@@ -496,6 +496,10 @@ input, textarea { font-family: inherit; }
   background: var(--accent); color: #fff;
 }
 .play-btn:hover { background: var(--accent-hover); }
+.player-btn.small { width: 28px; height: 28px; font-size: 0.78rem; opacity: 0.55; }
+.player-btn.small:hover { opacity: 1; }
+.player-btn.small.on { opacity: 1; color: var(--accent); background: var(--accent-dim); }
+.vol-ico { font-size: 0.78rem; opacity: 0.6; }
 
 .player-progress-wrap {
   flex: 1; display: flex; align-items: center; gap: 6px; min-width: 0;
@@ -518,6 +522,48 @@ input, textarea { font-family: inherit; }
   background: var(--accent); border: none;
 }
 .player-extra { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+
+/* ── Queue panel (slides up from above the player bar) ─────────── */
+.queue-panel {
+  position: absolute;
+  right: 12px;
+  bottom: calc(var(--player-h, 80px) + 6px);
+  width: 300px;
+  max-height: 50vh;
+  background: var(--glass-bg);
+  backdrop-filter: blur(40px) saturate(1.6);
+  -webkit-backdrop-filter: blur(40px) saturate(1.6);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-item);
+  box-shadow: 0 12px 40px rgba(0,0,0,0.4);
+  display: flex; flex-direction: column;
+  overflow: hidden; z-index: 50;
+}
+.queue-panel.hidden { display: none; }
+.queue-head {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; border-bottom: 1px solid var(--divider);
+  font-size: 0.82rem; font-weight: 600; flex-shrink: 0;
+}
+.queue-list { overflow-y: auto; padding: 4px; }
+.queue-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: var(--radius-sm);
+  cursor: pointer; transition: background 0.12s;
+}
+.queue-item:hover { background: var(--item-glass-hover); }
+.queue-item.current { background: var(--accent-dim); }
+.queue-item-idx { width: 20px; text-align: center; font-size: 0.72rem; color: var(--text-tertiary); flex-shrink: 0; }
+.queue-item-meta { flex: 1; min-width: 0; }
+.queue-item-title { font-size: 0.8rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queue-item-artist { font-size: 0.7rem; color: var(--text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.queue-item-rm { opacity: 0; color: var(--text-tertiary); font-size: 0.8rem; flex-shrink: 0; }
+.queue-item:hover .queue-item-rm { opacity: 0.7; }
+.queue-item-rm:hover { opacity: 1; color: var(--danger); }
+
+/* Lyric translation line */
+.lyric-trans { font-size: 0.82em; color: var(--text-tertiary); margin-top: 2px; }
+.lyric-line.active .lyric-trans { color: var(--accent); opacity: 0.75; }
 
 /* ═══════════════════════════════════════════════════════════════════
    Now-Playing Overlay (M6)

@@ -42,9 +42,11 @@
             </div>
           </div>
           <div class="player-controls">
+            <button class="player-btn small" id="btn-shuffle" title="随机播放">🔀</button>
             <button class="player-btn" id="btn-prev" title="上一首">⏮</button>
             <button class="player-btn play-btn" id="btn-play" title="播放">▶</button>
             <button class="player-btn" id="btn-next" title="下一首">⏭</button>
+            <button class="player-btn small" id="btn-repeat" title="循环">🔁</button>
           </div>
           <div class="player-progress-wrap">
             <span class="player-time" id="player-time-cur">0:00</span>
@@ -52,8 +54,19 @@
             <span class="player-time" id="player-time-dur">0:00</span>
           </div>
           <div class="player-extra">
+            <button class="player-btn small" id="btn-queue" title="播放队列">📜</button>
+            <span class="vol-ico">🔊</span>
             <input type="range" class="volume-slider" id="volume-slider" min="0" max="100" value="80">
           </div>
+        </div>
+
+        <!-- Queue panel -->
+        <div id="queue-panel" class="queue-panel hidden">
+          <div class="queue-head">
+            <span>播放队列</span>
+            <button id="btn-clear-queue" class="btn btn-ghost" style="font-size:0.72rem;padding:2px 8px">清空</button>
+          </div>
+          <div id="queue-list" class="queue-list"></div>
         </div>
       </div>
     </main>
