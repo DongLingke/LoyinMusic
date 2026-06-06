@@ -1403,8 +1403,11 @@ def proxy():
     from urllib.parse import urlparse
     parsed = urlparse(url)
     hostname = parsed.hostname or ''
-    blocked = {'127.0.0.1','localhost','0.0.0.0','[::1]'}
-    if hostname in blocked or hostname.startswith('10.') or hostname.startswith('192.168.') or hostname.startswith('172.'):
+    blocked = {'127.0.0.1','localhost','0.0.0.0','[::1]','::1'}
+    if (hostname in blocked or hostname.startswith('10.') or hostname.startswith('192.168.')
+            or hostname.startswith('172.') or hostname.startswith('169.254.')
+            or hostname.startswith('fc00:') or hostname.startswith('fd')
+            or hostname.startswith('fe80:') or hostname.startswith('0x')):
         return jsonify({'error': 'blocked_target'}), 403
     try:
         resp = req_lib.request(

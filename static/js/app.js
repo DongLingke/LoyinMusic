@@ -185,6 +185,16 @@ function applyAppearance() {
 // ── Utilities ─────────────────────────────────────────────────────
 const esc = s => { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; };
 
+function showToast(msg, type = 'info') {
+  const c = document.getElementById('toast-container');
+  if (!c) return;
+  const el = document.createElement('div');
+  el.className = `toast ${type === 'error' ? 'error' : ''}`;
+  el.textContent = msg;
+  c.appendChild(el);
+  setTimeout(() => el.remove(), 3200);
+}
+
 function fmtTime(ms) {
   if (!ms || ms <= 0) return '0:00';
   const s = Math.floor(ms / 1000), m = Math.floor(s / 60);
@@ -432,17 +442,33 @@ const player = {
 
   async _resolveOnlineUrl(track) {
     if (!window.sourceHost) throw new Error('no source host');
-    const quality = state.settings.default_quality_online || '320k';
+    const preferred = state.settings.default_quality_online || '320k';
+    const fallbackStr = state.settings.quality_fallback_order || 'flac,flac24bit,320k,128k';
+    const fallbacks = fallbackStr.split(',').map(s => s.trim());
+    // Build ordered list: preferred first, then fallback order (deduped)
+    const tryOrder = [preferred, ...fallbacks.filter(q => q !== preferred)];
     const musicInfo = track.source_meta ? JSON.parse(track.source_meta) : { songmid: track.source_id };
-    const url = await window.sourceHost.request(track.source, 'musicUrl', {
-      type: quality, musicInfo,
-    });
+    let url = '';
+    let usedQuality = preferred;
+    for (const q of tryOrder) {
+      try {
+        const result = await window.sourceHost.request(track.source, 'musicUrl', {
+          type: q, musicInfo,
+        }, 15000);
+        if (result && typeof result === 'string' && result.startsWith('http')) {
+          url = result;
+          usedQuality = q;
+          break;
+        }
+      } catch { /* try next quality */ }
+    }
+    if (!url) throw new Error('all qualities failed');
     // Cache it (only for DB-saved tracks with numeric IDs)
-    if (url && typeof track.id === 'number' && track.id > 0) {
+    if (typeof track.id === 'number' && track.id > 0) {
       api.put(`/online/tracks/${track.id}`, {
         url_cache: url,
         url_cache_at: new Date().toISOString(),
-        url_cache_q: quality,
+        url_cache_q: usedQuality,
       });
     }
     return url;
@@ -820,12 +846,30 @@ function renderOnlineView() {
     </div>
   </div>`;
 
-  // Search results (iTunes built-in + sandbox sources)
+  // Loading state
+  if (state._searchLoading) {
+    html += `<div class="search-loading"><div class="search-spinner"></div><span>搜索中...</span></div>`;
+  }
+
+  // Search results (iTunes built-in + platform sources)
   if (state.onlineSearchResults.length) {
-    const srcNote = sourceKeys.length ? `（含音源：${sourceKeys.filter(k=>k!=='local').join(', ')||'内置'}）` : '（内置 iTunes，30 秒试听）';
-    html += `<div class="settings-section-title" style="margin-top:0">搜索结果 ${srcNote}
-      <button class="btn btn-ghost" style="font-size:0.72rem;padding:2px 8px" id="btn-clear-results">清除</button></div>`;
-    html += renderSearchResults(state.onlineSearchResults);
+    // Platform filter tabs
+    const allSrcs = state._searchAllSources || [];
+    const curFilter = state._searchSourceFilter || 'all';
+    const PLATFORM_NAMES = { itunes:'iTunes', kw:'酷我', wy:'网易云', tx:'QQ音乐', kg:'酷狗', mg:'咪咕' };
+    html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
+      <div class="settings-section-title" style="margin:0;flex-shrink:0">搜索结果</div>
+      <div class="subtab-row" style="flex-wrap:wrap">
+        <button class="subtab ${curFilter==='all'?'active':''}" data-act="filter-source" data-src="all">全部 (${state.onlineSearchResults.length})</button>
+        ${allSrcs.map(s => {
+          const count = state.onlineSearchResults.filter(r => r.source === s).length;
+          return `<button class="subtab ${curFilter===s?'active':''}" data-act="filter-source" data-src="${s}">${PLATFORM_NAMES[s]||s} (${count})</button>`;
+        }).join('')}
+      </div>
+      <button class="btn btn-ghost" style="font-size:0.72rem;padding:2px 8px;margin-left:auto" id="btn-clear-results">清除</button>
+    </div>`;
+    const filtered = curFilter === 'all' ? state.onlineSearchResults : state.onlineSearchResults.filter(r => r.source === curFilter);
+    html += renderSearchResults(filtered);
     html += '<div style="margin:18px 0;border-top:1px solid var(--divider)"></div>';
     html += '<div class="settings-section-title">我的收藏</div>';
   }
@@ -1484,7 +1528,16 @@ function bindViewEvents() {
 
   document.getElementById('btn-clear-results')?.addEventListener('click', () => {
     state.onlineSearchResults = [];
+    state._searchAllSources = [];
     render();
+  });
+
+  // Platform filter tabs
+  document.querySelectorAll('[data-act="filter-source"]').forEach(btn => {
+    btn.onclick = () => {
+      state._searchSourceFilter = btn.dataset.src;
+      render();
+    };
   });
 
   document.getElementById('btn-import-pl')?.addEventListener('click', async () => {
@@ -1502,7 +1555,7 @@ function bindViewEvents() {
         body: text,
       });
       const d = await r.json();
-      alert(`导入完成，新增 ${d.added || 0} 首`);
+      showToast(`导入完成，新增 ${d.added || 0} 首`);
       state.onlineTracks = await api.get('/online/tracks');
       render();
     };
@@ -1602,11 +1655,12 @@ function bindViewEvents() {
     if (!url?.trim()) return;
     try {
       const r = await api.post('/sources', { url: url.trim() });
-      if (r.error) { alert('导入失败: ' + r.error); return; }
+      if (r.error) { showToast('导入失败: ' + r.error, 'error'); return; }
       state.sources = await api.get('/sources');
       try { await window.sourceHost.loadAll(); } catch {}
+      showToast('音源安装成功');
       render();
-    } catch (e) { alert('导入失败: ' + e.message); }
+    } catch (e) { showToast('导入失败: ' + e.message, 'error'); }
   });
 
   // ── Settings: sources (M4) ────────────────────────────────────
@@ -1759,10 +1813,10 @@ function bindViewEvents() {
     try {
       const data = JSON.parse(text);
       await api.post('/import', data);
-      alert('导入成功！');
+      showToast('数据导入成功');
       location.reload();
     } catch (err) {
-      alert('导入失败: ' + err.message);
+      showToast('导入失败: ' + err.message, 'error');
     }
   });
 
@@ -1932,9 +1986,16 @@ async function loadHistoryMonth() {
 
 // ── Now-playing overlay ──────────────────────────────────────────
 // ── Online search: backend-driven (iTunes + platform adapters) ───
+let _searchAbort = null;
 async function doOnlineSearch() {
   const q = state.searchQuery.trim();
   if (!q) return;
+
+  // Show loading state
+  state.onlineSearchResults = [];
+  state._searchLoading = true;
+  state._searchSourceFilter = 'all';  // reset filter
+  render();
 
   // Build sources list: always iTunes + any installed LX source platforms
   const avail = window.sourceHost ? window.sourceHost.getAvailableSources() : {};
@@ -1943,10 +2004,38 @@ async function doOnlineSearch() {
 
   try {
     const data = await api.get(`/online/search?q=${encodeURIComponent(q)}&sources=${sources}`);
-    state.onlineSearchResults = Array.isArray(data) ? data : [];
+    const raw = Array.isArray(data) ? data : [];
+    // Dedup: keep first occurrence per (title+artist, normalized)
+    const seen = new Map();
+    const deduped = [];
+    for (const r of raw) {
+      const key = (r.title + '|' + r.artist).toLowerCase().replace(/\s+/g, '');
+      if (!seen.has(key)) {
+        seen.set(key, r);
+        // Collect which platforms have this song
+        r._platforms = [r.source];
+        deduped.push(r);
+      } else {
+        // Merge platform into existing entry's _platforms
+        const existing = seen.get(key);
+        if (!existing._platforms.includes(r.source)) {
+          existing._platforms.push(r.source);
+        }
+        // Prefer non-iTunes (has full track) and non-empty cover
+        if (r.source !== 'itunes' && existing.source === 'itunes') {
+          // Swap: use platform result as primary
+          Object.assign(existing, r, { _platforms: existing._platforms });
+        }
+        if (!existing.cover_url && r.cover_url) existing.cover_url = r.cover_url;
+      }
+    }
+    state.onlineSearchResults = deduped;
+    state._searchAllSources = [...new Set(deduped.map(r => r.source))].sort();
   } catch {
     state.onlineSearchResults = [];
+    state._searchAllSources = [];
   }
+  state._searchLoading = false;
   render();
 }
 
@@ -1992,11 +2081,56 @@ function bindNav() {
   });
 }
 
+// ── Global keyboard shortcuts ────────────────────────────────────
+function bindGlobalKeys() {
+  document.addEventListener('keydown', (e) => {
+    // Ignore when typing in an input/textarea
+    const tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+    switch (e.code) {
+      case 'Space':
+        e.preventDefault();
+        player.togglePlay();
+        break;
+      case 'ArrowRight':
+        if (e.metaKey || e.ctrlKey) { player.next(); e.preventDefault(); }
+        break;
+      case 'ArrowLeft':
+        if (e.metaKey || e.ctrlKey) { player.prev(); e.preventDefault(); }
+        break;
+      case 'ArrowUp':
+        if (e.metaKey || e.ctrlKey) {
+          e.preventDefault();
+          const vol = document.getElementById('volume-slider');
+          vol.value = Math.min(100, parseInt(vol.value) + 5);
+          vol.dispatchEvent(new Event('input'));
+        }
+        break;
+      case 'ArrowDown':
+        if (e.metaKey || e.ctrlKey) {
+          e.preventDefault();
+          const vol = document.getElementById('volume-slider');
+          vol.value = Math.max(0, parseInt(vol.value) - 5);
+          vol.dispatchEvent(new Event('input'));
+        }
+        break;
+      case 'KeyM':
+        if (e.metaKey || e.ctrlKey) { // Cmd/Ctrl+M = mute toggle
+          e.preventDefault();
+          player.audio.muted = !player.audio.muted;
+        }
+        break;
+    }
+  });
+}
+
 // ── Boot ──────────────────────────────────────────────────────────
 async function boot() {
   player.init();
   bindNav();
   bindNowPlaying();
+  bindGlobalKeys();
 
   const [tracks, onlineTracks, tags, settings, sources, playlists] = await Promise.all([
     api.get('/local/tracks'),
