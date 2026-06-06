@@ -6,7 +6,8 @@ build/
 dist/
 *.spec
 *.dmg
-tunenote.db
+data/
+loyin.db
 AppIcon.iconset/
 .npm-cache/
 .claude/

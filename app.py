@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""听迹 Tunenote — Flask 后端
+"""落音 LoyinMusic — Flask 后端
 
 纯 Web 服务：部署在 Linux 服务器上，手机/电脑通过浏览器访问。
-所有数据存储在 TUNENOTE_DATA 目录下（默认 ./data），包括：
-  - tunenote.db（SQLite 数据库）
+所有数据存储在 LOYIN_DATA 目录下（默认 ./data），包括：
+  - loyin.db（SQLite 数据库）
   - covers/（封面缓存）
 
 前端通过 REST API 驱动，未来做客户端只需对接同一组 API。
+与日迹 DayNote 同属一个系列。
 """
 
 import os
@@ -29,9 +30,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # Paths
 # ---------------------------------------------------------------------------
 BASE = Path(__file__).resolve().parent
-DATA_DIR = Path(os.environ.get('TUNENOTE_DATA', str(BASE / 'data')))
+DATA_DIR = Path(os.environ.get('LOYIN_DATA', str(BASE / 'data')))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = DATA_DIR / 'tunenote.db'
+DB_PATH = DATA_DIR / 'loyin.db'
 COVERS_DIR = DATA_DIR / 'covers'
 COVERS_DIR.mkdir(parents=True, exist_ok=True)
 

@@ -1,6 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════════
-   听迹 Tunenote — Frontend SPA  (M0–M5)
+   落音 LoyinMusic — Frontend SPA
    Web-first: runs in any browser, designed for remote access.
+   与日迹 DayNote 同属一个系列。
    ═══════════════════════════════════════════════════════════════════ */
 
 // ── API layer ─────────────────────────────────────────────────────
@@ -1746,7 +1747,7 @@ function bindViewEvents() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `tunenote-backup-${new Date().toISOString().slice(0,10)}.json`;
+    a.download = `loyin-backup-${new Date().toISOString().slice(0,10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
   });
