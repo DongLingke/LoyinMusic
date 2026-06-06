@@ -507,13 +507,31 @@ const player = {
   },
 
   async _resolveOnlineUrl(track) {
-    if (!window.sourceHost) throw new Error('no source host');
     const preferred = state.settings.default_quality_online || '320k';
+    const musicInfo = track.source_meta ? JSON.parse(track.source_meta) : { songmid: track.source_id };
+    const songmid = musicInfo.songmid || track.source_id;
+
+    // 1) Try built-in resolver first (direct platform API, no LX source needed)
+    if (track.source && !['url', 'itunes'].includes(track.source) && songmid) {
+      try {
+        const r = await api.get(`/online/resolve?source=${track.source}&songmid=${encodeURIComponent(songmid)}&quality=${preferred}`);
+        if (r.url) {
+          // Cache it
+          if (typeof track.id === 'number' && track.id > 0) {
+            api.put(`/online/tracks/${track.id}`, {
+              url_cache: r.url, url_cache_at: new Date().toISOString(), url_cache_q: r.quality || preferred,
+            });
+          }
+          return r.url;
+        }
+      } catch { /* built-in resolver failed, try LX source */ }
+    }
+
+    // 2) Fallback: LX source sandbox
+    if (!window.sourceHost) throw new Error('built-in resolver failed, no LX source host');
     const fallbackStr = state.settings.quality_fallback_order || 'flac,flac24bit,320k,128k';
     const fallbacks = fallbackStr.split(',').map(s => s.trim());
-    // Build ordered list: preferred first, then fallback order (deduped)
     const tryOrder = [preferred, ...fallbacks.filter(q => q !== preferred)];
-    const musicInfo = track.source_meta ? JSON.parse(track.source_meta) : { songmid: track.source_id };
     let url = '';
     let usedQuality = preferred;
     const errors = [];

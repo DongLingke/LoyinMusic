@@ -1185,6 +1185,172 @@ def online_search():
     return jsonify(results)
 
 
+# ---------------------------------------------------------------------------
+# Built-in music URL resolver (no LX source dependency)
+# ---------------------------------------------------------------------------
+# Directly resolves playback URLs from platform APIs, bypassing the need for
+# LX source scripts + external API servers.
+# ---------------------------------------------------------------------------
+
+def _resolve_wy(songmid, quality):
+    """网易云 — public outer URL (works for non-VIP tracks)."""
+    # Try the direct outer URL (302 redirect to CDN)
+    r = req_lib.get(
+        f'https://music.163.com/song/media/outer/url?id={songmid}.mp3',
+        headers={'User-Agent': _SEARCH_UA, 'Referer': 'https://music.163.com'},
+        allow_redirects=False, timeout=8,
+    )
+    if r.status_code in (301, 302) and r.headers.get('Location'):
+        loc = r.headers['Location']
+        if 'error' not in loc and loc.startswith('http'):
+            return loc
+    # Fallback: try the enhanced API
+    br = '999000' if quality in ('flac', 'flac24bit') else ('320000' if quality == '320k' else '128000')
+    r2 = req_lib.post(
+        'https://music.163.com/api/song/enhance/player/url',
+        data={'ids': f'[{songmid}]', 'br': br},
+        headers={'User-Agent': _SEARCH_UA, 'Referer': 'https://music.163.com',
+                 'Content-Type': 'application/x-www-form-urlencoded'},
+        timeout=8,
+    )
+    data = r2.json()
+    for item in data.get('data', []):
+        if item.get('url') and item.get('code') == 200:
+            return item['url']
+    return None
+
+
+def _resolve_kw(songmid, quality):
+    """酷我 — antiserver convert_url3 (no auth needed)."""
+    fmt = 'flac' if quality in ('flac', 'flac24bit') else 'mp3'
+    r = req_lib.get(
+        'http://antiserver.kuwo.cn/anti.s',
+        params={'type': 'convert_url3', 'rid': songmid, 'format': fmt},
+        headers={'User-Agent': _SEARCH_UA},
+        timeout=8,
+    )
+    data = r.json()
+    url = data.get('url', '')
+    return url if url and url.startswith('http') else None
+
+
+def _resolve_kg(songmid, quality):
+    """酷狗 — hash-based URL resolution."""
+    # songmid for kg is the hash
+    h = songmid
+    r = req_lib.get(
+        'http://trackercdn.kugou.com/i/v2/',
+        params={'hash': h, 'key': '', 'pid': 1, 'behavior': 'play',
+                'cmd': '25', 'version': '8990'},
+        headers={'User-Agent': _SEARCH_UA},
+        timeout=8,
+    )
+    data = r.json()
+    urls = data.get('url', []) if isinstance(data.get('url'), list) else []
+    if urls:
+        return urls[0]
+    # Try alternate endpoint
+    r2 = req_lib.get(
+        f'https://wwwapi.kugou.com/yy/index.php?r=play/getdata&hash={h}',
+        headers={'User-Agent': _SEARCH_UA, 'Cookie': 'kg_mid=1'},
+        timeout=8,
+    )
+    data2 = r2.json()
+    play_url = data2.get('data', {}).get('play_url', '')
+    return play_url if play_url and play_url.startswith('http') else None
+
+
+def _resolve_tx(songmid, quality):
+    """QQ 音乐 — C400 CDN URL pattern."""
+    import random, string
+    guid = ''.join(random.choices(string.digits, k=10))
+    uin = '0'
+    file_type = 'F000' if quality in ('flac', 'flac24bit') else ('M800' if quality == '320k' else 'M500')
+    ext = '.flac' if quality in ('flac', 'flac24bit') else '.mp3'
+    filename = f'{file_type}{songmid}{ext}'
+    # Get vkey
+    url_params = {
+        'format': 'json', 'data': json.dumps({
+            "req_0": {
+                "module": "vkey.GetVkeyServer",
+                "method": "CgiGetVkey",
+                "param": {
+                    "guid": guid, "songmid": [songmid], "songtype": [0],
+                    "uin": uin, "loginflag": 1, "platform": "20",
+                    "filename": [filename],
+                }
+            }
+        })
+    }
+    r = req_lib.get(
+        'https://u.y.qq.com/cgi-bin/musics.fcg',
+        params=url_params,
+        headers={'User-Agent': _SEARCH_UA, 'Referer': 'https://y.qq.com'},
+        timeout=8,
+    )
+    data = r.json()
+    midurlinfo = data.get('req_0', {}).get('data', {}).get('midurlinfo', [])
+    sip = data.get('req_0', {}).get('data', {}).get('sip', ['http://ws.stream.qqmusic.qq.com/'])
+    if midurlinfo and midurlinfo[0].get('purl'):
+        return (sip[0] if sip else 'http://ws.stream.qqmusic.qq.com/') + midurlinfo[0]['purl']
+    return None
+
+
+def _resolve_mg(songmid, quality):
+    """咪咕 — toneFlag-based URL."""
+    tone = 'HQ' if quality in ('flac', 'flac24bit') else ('PQ' if quality == '320k' else 'LQ')
+    r = req_lib.get(
+        'https://app.c.nf.migu.cn/MIGUM2.0/strategy/listen-url/v2.4',
+        params={'netType': '01', 'resourceType': 'E', 'songId': songmid,
+                'toneFlag': tone},
+        headers={'User-Agent': _SEARCH_UA, 'Referer': 'https://m.music.migu.cn',
+                 'channel': '0146951', 'uid': '1234'},
+        timeout=8,
+    )
+    data = r.json()
+    url = data.get('data', {}).get('url', '')
+    if url and url.startswith('//'):
+        url = 'https:' + url
+    return url if url and url.startswith('http') else None
+
+
+_PLATFORM_RESOLVE = {
+    'kw': _resolve_kw, 'wy': _resolve_wy, 'tx': _resolve_tx,
+    'kg': _resolve_kg, 'mg': _resolve_mg,
+}
+
+
+@app.route('/api/online/resolve')
+def resolve_url():
+    """Resolve a playback URL directly from a platform (no LX source needed).
+
+    Query params: source, songmid, quality (default 320k)
+    Falls through quality levels: requested → 320k → 128k
+    """
+    source = request.args.get('source', '')
+    songmid = request.args.get('songmid', '')
+    quality = request.args.get('quality', '320k')
+    if not source or not songmid:
+        return jsonify({'error': 'missing source or songmid'}), 400
+    fn = _PLATFORM_RESOLVE.get(source)
+    if not fn:
+        return jsonify({'error': f'unsupported source: {source}'}), 400
+    # Try requested quality, then fallback
+    fallbacks = [quality]
+    if quality != '320k':
+        fallbacks.append('320k')
+    if quality != '128k':
+        fallbacks.append('128k')
+    for q in fallbacks:
+        try:
+            url = fn(songmid, q)
+            if url:
+                return jsonify({'url': url, 'quality': q})
+        except Exception as e:
+            print(f'[resolve] {source}/{songmid}/{q}: {e}', file=sys.stderr)
+    return jsonify({'error': 'no_url', 'msg': '无法获取播放链接'}), 404
+
+
 @app.route('/api/online/import', methods=['POST'])
 def online_import():
     """Import a playlist. Supports LX Music export (.lxmf JSON) and m3u/m3u8."""
