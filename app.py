@@ -1214,6 +1214,22 @@ def install_source():
         if m.group(1) not in meta:   # first occurrence wins
             meta[m.group(1)] = m.group(2).strip()
     conn = get_db()
+    # Check for duplicate by name+author
+    existing = conn.execute(
+        'SELECT id FROM custom_sources WHERE name=? AND author=?',
+        (meta.get('name', '未命名源'), meta.get('author', ''))
+    ).fetchone()
+    if existing:
+        # Update existing source instead of duplicating
+        conn.execute(
+            'UPDATE custom_sources SET raw_script=?, version=?, description=?, homepage=?, '
+            'updated_at=datetime("now","localtime"), sources_json=NULL WHERE id=?',
+            (raw, meta.get('version', ''), meta.get('description', ''),
+             meta.get('homepage', ''), existing['id']))
+        conn.commit()
+        row = dict(conn.execute('SELECT id, name, description, version, author, homepage, sources_json, enabled, installed_at, updated_at FROM custom_sources WHERE id=?', (existing['id'],)).fetchone())
+        conn.close()
+        return jsonify(row), 200
     cur = conn.execute(
         'INSERT INTO custom_sources (name, description, version, author, homepage, raw_script) VALUES (?,?,?,?,?,?)',
         (meta.get('name','未命名源'), meta.get('description',''), meta.get('version',''),

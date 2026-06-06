@@ -6,28 +6,28 @@
 
 // ── API layer ─────────────────────────────────────────────────────
 const api = {
-  async get(path) { const r = await fetch(`/api${path}`); return r.json(); },
+  async _req(path, opts) {
+    try {
+      const r = await fetch(`/api${path}`, opts);
+      if (r.status === 401) { location.reload(); return {}; }
+      return r.json();
+    } catch (e) {
+      if (typeof showToast === 'function') showToast('网络请求失败', 'error');
+      throw e;
+    }
+  },
+  async get(path) { return this._req(path); },
   async post(path, body) {
-    const r = await fetch(`/api${path}`, {
-      method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
-    });
-    return r.json();
+    return this._req(path, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
   },
   async put(path, body) {
-    const r = await fetch(`/api${path}`, {
-      method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body),
-    });
-    return r.json();
+    return this._req(path, { method: 'PUT', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
   },
-  async del(path) {
-    const r = await fetch(`/api${path}`, { method: 'DELETE' });
-    return r.json();
-  },
+  async del(path) { return this._req(path, { method: 'DELETE' }); },
   async upload(path, file) {
     const fd = new FormData();
     fd.append('file', file);
-    const r = await fetch(`/api${path}`, { method: 'POST', body: fd });
-    return r.json();
+    return this._req(path, { method: 'POST', body: fd });
   },
 };
 
@@ -526,7 +526,8 @@ const player = {
       const payload = {
         queue: this.queue.map(t => ({ kind: t.kind, id: t.id, title: t.title, artist: t.artist,
           album: t.album, duration_ms: t.duration_ms, cover_hash: t.cover_hash, cover_url: t.cover_url,
-          source: t.source, source_id: t.source_id, source_meta: t.source_meta, url_cache: t.url_cache })),
+          source: t.source, source_id: t.source_id, source_meta: t.source_meta,
+          url_cache: t.url_cache, url_cache_at: t.url_cache_at })),
         current: this.current,
         time: Math.floor(this.audio.currentTime || 0),
       };
@@ -559,7 +560,8 @@ const player = {
     } catch {}
   },
   _onError() {
-    console.warn('playback error, skipping');
+    const track = this.queue[this.current];
+    showToast(`播放出错${track ? ': ' + track.title : ''}，跳过`, 'error');
     setTimeout(() => this.next(), 500);
   },
   _onTimeUpdate() {
@@ -571,7 +573,10 @@ const player = {
     }
     this._syncLyrics();
   },
-  _updatePlayBtn() { document.getElementById('btn-play').textContent = this.playing ? '⏸' : '▶'; },
+  _updatePlayBtn() {
+    document.getElementById('btn-play').textContent = this.playing ? '⏸' : '▶';
+    if (!this.playing && !this.audio.src) document.title = '落音 LoyinMusic';
+  },
   lyrics: [],      // parsed LRC lines for current track
   _currentTrack: null,
 
@@ -601,6 +606,8 @@ const player = {
     document.getElementById('np-title-lg').textContent = track.title || '未知曲目';
     document.getElementById('np-artist-lg').textContent = track.artist || '';
     document.getElementById('np-album-lg').textContent = track.album || '';
+    // Page title
+    document.title = `${track.title || '未知曲目'} - ${track.artist || ''} | 落音`.replace(/ - \|/, ' |');
     // Cover accent (M6)
     extractAccentFromCover(src);
     // Load lyrics (M6)
@@ -880,6 +887,11 @@ function renderOnlineView() {
   // Loading state
   if (state._searchLoading) {
     html += `<div class="search-loading"><div class="search-spinner"></div><span>搜索中...</span></div>`;
+  }
+
+  // No results message
+  if (state._searchNoResults && !state._searchLoading && !state.onlineSearchResults.length) {
+    html += `<div style="padding:24px;text-align:center;color:var(--text-tertiary)">没有找到相关歌曲，换个关键词试试</div>`;
   }
 
   // Search results (iTunes built-in + platform sources)
@@ -1422,6 +1434,7 @@ function bindViewEvents() {
   // Sort control
   document.querySelector('[data-act="set-sort"]')?.addEventListener('change', async (e) => {
     state._localSort = e.target.value;
+    state._trackPage = 0;  // reset to first page
     const [sort, order] = e.target.value.split(':');
     state.localTracks = await api.get(`/local/tracks?sort=${sort}&order=${order}`);
     render();
@@ -1439,23 +1452,29 @@ function bindViewEvents() {
   }
 
   // Track row click → play (DB-backed rows)
+  // Build queue from the FULL data pool, not just visible DOM rows (pagination)
   document.querySelectorAll('.track-row[data-id]').forEach(row => {
     row.onclick = (e) => {
       if (e.target.closest('[data-act]')) return;
       const kind = row.dataset.kind;
       const id = parseInt(row.dataset.id, 10);
-      const rows = [...document.querySelectorAll('.track-row[data-id]')];
-      const queue = rows.map(r => {
-        const k = r.dataset.kind;
-        const tid = parseInt(r.dataset.id, 10);
-        const pool = k === 'local' ? state.localTracks : state.onlineTracks;
-        const track = pool.find(t => t.id === tid)
-          || (state.activePlaylist?.items || []).find(t => t.track_id === tid)
-          || state.tagTracks.find(t => t.track_id === tid);
-        return track ? { ...track, kind: k, id: tid } : null;
-      }).filter(Boolean);
-      const idx = queue.findIndex(t => t.kind === kind && t.id === id);
-      if (idx >= 0) player.playTrack(queue[idx], queue, idx);
+      // Use the full pool for the queue so all tracks are playable
+      let fullPool;
+      if (state.view === 'local') fullPool = state.localTracks.map(t => ({ ...t, kind: 'local' }));
+      else if (state.view === 'online') fullPool = state.onlineTracks.map(t => ({ ...t, kind: 'online' }));
+      else if (state.view === 'playlists' && state.activePlaylist) fullPool = state.activePlaylist.items.map(t => ({ ...t, kind: t.track_kind, id: t.track_id }));
+      else if (state.view === 'tags') fullPool = state.tagTracks.map(t => ({ ...t, kind: t.track_kind, id: t.track_id }));
+      else {
+        const rows = [...document.querySelectorAll('.track-row[data-id]')];
+        fullPool = rows.map(r => {
+          const k = r.dataset.kind, tid = parseInt(r.dataset.id, 10);
+          const pool = k === 'local' ? state.localTracks : state.onlineTracks;
+          const track = pool.find(t => t.id === tid);
+          return track ? { ...track, kind: k, id: tid } : null;
+        }).filter(Boolean);
+      }
+      const idx = fullPool.findIndex(t => t.kind === kind && t.id === id);
+      if (idx >= 0) player.playTrack(fullPool[idx], fullPool, idx);
     };
   });
 
@@ -2248,6 +2267,8 @@ async function doOnlineSearch() {
     state._searchAllSources = [];
   }
   state._searchLoading = false;
+  if (!state.onlineSearchResults.length) state._searchNoResults = true;
+  else state._searchNoResults = false;
   render();
 }
 
@@ -2286,6 +2307,8 @@ function bindNav() {
     btn.onclick = () => {
       state.view = btn.dataset.view;
       state.searchQuery = '';
+      state._trackPage = 0;
+      state._searchNoResults = false;
       document.querySelectorAll('.nav-btn[data-view]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       render();
