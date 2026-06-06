@@ -291,6 +291,7 @@ const player = {
   shuffle: false,
   repeat: 'none',   // 'none' | 'all' | 'one'
   _saveTimer: null,
+  _resolveFailCount: 0,  // circuit breaker for resolve failures
   _speedIdx: 2,     // index into SPEED_STEPS (1x)
   _crossfade: 0,    // crossfade seconds (0=off)
   _audioCtx: null,  // Web Audio context for visualizer
@@ -481,9 +482,21 @@ const player = {
       // Don't show redundant toast if we already showed one above
       if (!track.source || track.source === 'url' || track.source === 'itunes')
         showToast('无法获取播放链接', 'error');
-      this.next();
+      // Circuit breaker: DON'T auto-skip to next if resolve keeps failing
+      // — that causes a request storm (each skip triggers 4 more API calls)
+      this._resolveFailCount = (this._resolveFailCount || 0) + 1;
+      if (this._resolveFailCount >= 3) {
+        showToast('连续解析失败，已停止自动跳转 — 请检查音源', 'error');
+        this._resolveFailCount = 0;
+        return;  // stop, don't skip
+      }
+      // Only skip for non-source tracks (direct URL / iTunes previews)
+      if (track.source === 'url' || track.source === 'itunes') {
+        this.next();
+      }
       return;
     }
+    this._resolveFailCount = 0;  // reset on success
     this.audio.src = url;
     this.audio.play();
     this._startTime = Date.now();
@@ -517,6 +530,7 @@ const player = {
         if (result && typeof result === 'string' && result.startsWith('http')) {
           url = result;
           usedQuality = q;
+          player._resolveFailCount = 0;  // reset circuit breaker
           break;
         }
         // Result came back but wasn't a valid URL
@@ -525,7 +539,14 @@ const player = {
           errors.push(`${q}: 返回非URL (${hint})`);
         } else errors.push(`${q}: 返回空`);
       } catch (e) {
-        errors.push(`${q}: ${e.message || e}`);
+        const errMsg = e.message || String(e);
+        errors.push(`${q}: ${errMsg}`);
+        // If API is rejecting (not a quality-specific issue), stop immediately
+        // — don't waste 3 more requests that will also fail
+        if (errMsg.includes('unknow error') || errMsg.includes('禁止') || errMsg.includes('blocked') || errMsg.includes('unauthorized')) {
+          console.warn(`[musicUrl] API 拒绝，停止尝试其他音质:`, errMsg);
+          break;
+        }
       }
     }
     if (!url) {
