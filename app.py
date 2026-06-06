@@ -1540,20 +1540,28 @@ def proxy():
             or hostname.startswith('fc00:') or hostname.startswith('fd')
             or hostname.startswith('fe80:') or hostname.startswith('0x')):
         return jsonify({'error': 'blocked_target'}), 403
+    method = opts.get('method', 'GET').upper()
     try:
+        req_headers = opts.get('headers', {})
+        # Some sources send headers as non-dict; normalize
+        if not isinstance(req_headers, dict):
+            req_headers = {}
         resp = req_lib.request(
-            method=opts.get('method','GET').upper(),
+            method=method,
             url=url,
-            headers=opts.get('headers', {}),
+            headers=req_headers,
             data=opts.get('body'),
             timeout=min(opts.get('timeout', 15000) / 1000.0, 30),
+            allow_redirects=True,
         )
+        print(f'[proxy] {method} {url[:100]} → {resp.status_code} ({len(resp.text)} bytes)', flush=True)
         return jsonify({
             'status': resp.status_code,
             'headers': dict(resp.headers),
             'body': resp.text,
         })
     except Exception as e:
+        print(f'[proxy] {method} {url[:100]} → ERROR: {e}', file=sys.stderr, flush=True)
         return jsonify({'error': str(e)}), 502
 
 

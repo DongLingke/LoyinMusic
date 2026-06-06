@@ -461,13 +461,26 @@ const player = {
         try {
           url = await this._resolveOnlineUrl(track);
         } catch (e) {
-          showToast(`解析失败: ${e.message || '未知错误'}`, 'error');
+          const msg = e.message || '未知错误';
+          // Show actionable hint based on error type
+          if (msg.includes('timeout') || msg.includes('Timeout'))
+            showToast(`解析超时 — 音源服务器无响应`, 'error');
+          else if (msg.includes('no script provides'))
+            showToast(`音源 "${track.source}" 未安装或已禁用`, 'error');
+          else if (msg.includes('not ready'))
+            showToast(`音源尚未初始化，请稍后重试`, 'error');
+          else if (msg.includes('unknow error') || msg.includes('unknown error'))
+            showToast(`音源 API 拒绝请求 — 可能需要更换音源或 API 服务器`, 'error');
+          else
+            showToast(`解析失败: ${msg.slice(0, 60)}`, 'error');
         }
       }
       if (!url) url = track.url_cache || track.path || '';
     }
     if (!url) {
-      showToast('无法获取播放链接', 'error');
+      // Don't show redundant toast if we already showed one above
+      if (!track.source || track.source === 'url' || track.source === 'itunes')
+        showToast('无法获取播放链接', 'error');
       this.next();
       return;
     }
@@ -495,6 +508,7 @@ const player = {
     const musicInfo = track.source_meta ? JSON.parse(track.source_meta) : { songmid: track.source_id };
     let url = '';
     let usedQuality = preferred;
+    const errors = [];
     for (const q of tryOrder) {
       try {
         const result = await window.sourceHost.request(track.source, 'musicUrl', {
@@ -505,9 +519,19 @@ const player = {
           usedQuality = q;
           break;
         }
-      } catch { /* try next quality */ }
+        // Result came back but wasn't a valid URL
+        if (result) {
+          const hint = typeof result === 'string' ? result.slice(0, 80) : JSON.stringify(result).slice(0, 80);
+          errors.push(`${q}: 返回非URL (${hint})`);
+        } else errors.push(`${q}: 返回空`);
+      } catch (e) {
+        errors.push(`${q}: ${e.message || e}`);
+      }
     }
-    if (!url) throw new Error('all qualities failed');
+    if (!url) {
+      console.warn('[musicUrl] 全部失败:', track.source, musicInfo.songmid, errors);
+      throw new Error(errors[0] || 'all qualities failed');
+    }
     // Cache it (only for DB-saved tracks with numeric IDs)
     if (typeof track.id === 'number' && track.id > 0) {
       api.put(`/online/tracks/${track.id}`, {

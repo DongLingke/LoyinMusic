@@ -166,6 +166,7 @@ class SourceHost {
 
   async _proxyHttp(reqId, url, options, source) {
     try {
+      console.debug('[proxy]', options.method || 'GET', url.slice(0, 120));
       const resp = await fetch('/api/proxy', {
         method: 'POST',
         headers: {'Content-Type':'application/json'},
@@ -173,14 +174,17 @@ class SourceHost {
       });
       const data = await resp.json();
       if (data.error) {
+        console.warn('[proxy] error:', url.slice(0, 80), data.error);
         source.postMessage({ type: 'http-response', reqId, error: data.error }, '*');
       } else {
+        console.debug('[proxy] ok:', data.status, url.slice(0, 80), 'body:', (data.body || '').slice(0, 100));
         source.postMessage({
           type: 'http-response', reqId,
           status: data.status, headers: data.headers, body: data.body,
         }, '*');
       }
     } catch (err) {
+      console.error('[proxy] fetch failed:', url.slice(0, 80), err);
       source.postMessage({ type: 'http-response', reqId, error: String(err) }, '*');
     }
   }
