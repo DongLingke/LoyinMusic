@@ -762,6 +762,72 @@ def get_history():
     return jsonify([dict(r) for r in rows])
 
 
+@app.route('/api/stats')
+def get_stats():
+    """Listening statistics."""
+    conn = get_db()
+    total_plays = conn.execute('SELECT COUNT(*) as n FROM play_history').fetchone()['n']
+    total_ms = conn.execute('SELECT COALESCE(SUM(duration_played),0) as n FROM play_history').fetchone()['n']
+    # Top 10 artists
+    top_artists = conn.execute('''
+        SELECT COALESCE(lt.artist, ot.artist) as art_name, COUNT(*) as plays
+        FROM play_history ph
+        LEFT JOIN local_tracks lt ON ph.track_kind='local' AND ph.track_id=lt.id
+        LEFT JOIN online_tracks ot ON ph.track_kind='online' AND ph.track_id=ot.id
+        WHERE art_name IS NOT NULL AND art_name != ''
+        GROUP BY art_name ORDER BY plays DESC LIMIT 10
+    ''').fetchall()
+    # Top 10 tracks
+    top_tracks = conn.execute('''
+        SELECT COALESCE(lt.title, ot.title) as trk_title,
+               COALESCE(lt.artist, ot.artist) as trk_artist,
+               ph.track_kind, ph.track_id, COUNT(*) as plays
+        FROM play_history ph
+        LEFT JOIN local_tracks lt ON ph.track_kind='local' AND ph.track_id=lt.id
+        LEFT JOIN online_tracks ot ON ph.track_kind='online' AND ph.track_id=ot.id
+        WHERE trk_title IS NOT NULL
+        GROUP BY ph.track_kind, ph.track_id ORDER BY plays DESC LIMIT 10
+    ''').fetchall()
+    # Daily play counts (last 30 days)
+    daily = conn.execute('''
+        SELECT date(played_at) as day, COUNT(*) as plays,
+               COALESCE(SUM(duration_played),0) as ms
+        FROM play_history
+        WHERE played_at >= datetime('now','localtime','-30 days')
+        GROUP BY day ORDER BY day
+    ''').fetchall()
+    # Library counts
+    local_count = conn.execute('SELECT COUNT(*) as n FROM local_tracks').fetchone()['n']
+    online_count = conn.execute('SELECT COUNT(*) as n FROM online_tracks').fetchone()['n']
+    conn.close()
+    return jsonify({
+        'total_plays': total_plays,
+        'total_ms': total_ms,
+        'local_count': local_count,
+        'online_count': online_count,
+        'top_artists': [{'artist': r['art_name'], 'plays': r['plays']} for r in top_artists],
+        'top_tracks': [{'title': r['trk_title'], 'artist': r['trk_artist'], 'plays': r['plays'], 'track_kind': r['track_kind'], 'track_id': r['track_id']} for r in top_tracks],
+        'daily': [dict(r) for r in daily],
+    })
+
+
+@app.route('/api/local/duplicates')
+def find_duplicates():
+    """Find potential duplicate tracks by title+artist."""
+    conn = get_db()
+    rows = conn.execute('''
+        SELECT title, artist, COUNT(*) as cnt, GROUP_CONCAT(id) as ids
+        FROM local_tracks
+        WHERE title != ''
+        GROUP BY LOWER(title), LOWER(artist)
+        HAVING cnt > 1
+        ORDER BY cnt DESC
+        LIMIT 50
+    ''').fetchall()
+    conn.close()
+    return jsonify([dict(r) for r in rows])
+
+
 @app.route('/api/history', methods=['DELETE'])
 def clear_history():
     conn = get_db()

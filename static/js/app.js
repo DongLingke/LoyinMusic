@@ -280,6 +280,8 @@ function kindBadge(kind) {
 }
 
 // ── Player ────────────────────────────────────────────────────────
+const SPEED_STEPS = [0.5, 0.75, 1, 1.25, 1.5, 2];
+
 const player = {
   audio: null,
   queue: [],
@@ -289,13 +291,18 @@ const player = {
   shuffle: false,
   repeat: 'none',   // 'none' | 'all' | 'one'
   _saveTimer: null,
+  _speedIdx: 2,     // index into SPEED_STEPS (1x)
+  _crossfade: 0,    // crossfade seconds (0=off)
+  _audioCtx: null,  // Web Audio context for visualizer
+  _analyser: null,
+  _vizRAF: null,
 
   init() {
     this.audio = document.getElementById('audio-el');
     this.audio.addEventListener('ended', () => this._onEnded());
     this.audio.addEventListener('timeupdate', () => this._onTimeUpdate());
-    this.audio.addEventListener('play', () => { this.playing = true; this._updatePlayBtn(); });
-    this.audio.addEventListener('pause', () => { this.playing = false; this._updatePlayBtn(); });
+    this.audio.addEventListener('play', () => { this.playing = true; this._updatePlayBtn(); this._startVisualizer(); });
+    this.audio.addEventListener('pause', () => { this.playing = false; this._updatePlayBtn(); this._stopVisualizer(); });
     this.audio.addEventListener('error', () => this._onError());
 
     document.getElementById('btn-play').onclick = () => this.togglePlay();
@@ -307,6 +314,12 @@ const player = {
     document.getElementById('btn-clear-queue').onclick = () => {
       this.queue = []; this.current = -1; this._renderQueue(); this._saveLast();
     };
+
+    // ❤️ Favorite button
+    document.getElementById('btn-fav').onclick = () => this._toggleFav();
+
+    // ⏩ Speed button
+    document.getElementById('btn-speed').onclick = () => this._cycleSpeed();
 
     const prog = document.getElementById('player-progress');
     prog.addEventListener('input', () => {
@@ -326,6 +339,7 @@ const player = {
       this.audio.volume = v / 100;
       this.shuffle = s.shuffle === 'true';
       this.repeat = s.repeat_mode || 'none';
+      this._crossfade = parseInt(s.crossfade || '0', 10);
       this._updateModeButtons();
     });
 
@@ -338,6 +352,9 @@ const player = {
         if (d.seekTime != null) this.audio.currentTime = d.seekTime;
       });
     }
+
+    // Init Web Audio for visualizer (deferred until first play)
+    this._initAudioContext();
   },
 
   toggleShuffle() {
@@ -572,6 +589,7 @@ const player = {
       cur.textContent = fmtTimeSec(this.audio.currentTime);
     }
     this._syncLyrics();
+    this._applyCrossfade();
   },
   _updatePlayBtn() {
     document.getElementById('btn-play').textContent = this.playing ? '⏸' : '▶';
@@ -615,6 +633,8 @@ const player = {
     this._loadLyrics(track);
     // Load note (M9)
     this._loadNote(track);
+    // Check favorite state
+    this._checkFav(track);
   },
 
   async _resolveCover(track) {
@@ -694,6 +714,104 @@ const player = {
     navigator.mediaSession.metadata = new MediaMetadata({
       title: track.title || '未知曲目', artist: track.artist || '', album: track.album || '', artwork,
     });
+  },
+
+  // ── ❤️ Favorite (auto-creates "我喜欢" tag, toggles for current track) ──
+  async _toggleFav() {
+    const track = this._currentTrack;
+    if (!track || typeof track.id !== 'number') return;
+    const kind = track.kind || 'local';
+    // Ensure "我喜欢" tag exists
+    let favTag = state.tags.find(t => t.name === '我喜欢');
+    if (!favTag) {
+      favTag = await api.post('/tags', { name: '我喜欢', color: '#FF3B58' });
+      state.tags = await api.get('/tags');
+    }
+    const trackTags = await api.get(`/tracks/${kind}/${track.id}/tags`);
+    const tagIds = trackTags.map(t => t.id);
+    const isFav = tagIds.includes(favTag.id);
+    if (isFav) {
+      await api.put(`/tracks/${kind}/${track.id}/tags`, { tag_ids: tagIds.filter(id => id !== favTag.id) });
+      showToast('已取消喜欢');
+    } else {
+      await api.put(`/tracks/${kind}/${track.id}/tags`, { tag_ids: [...tagIds, favTag.id] });
+      showToast('已添加到我喜欢 ♥');
+    }
+    this._updateFavBtn(!isFav);
+  },
+  _updateFavBtn(isFav) {
+    const btn = document.getElementById('btn-fav');
+    if (btn) { btn.textContent = isFav ? '♥' : '♡'; btn.classList.toggle('on', isFav); }
+  },
+  async _checkFav(track) {
+    if (!track || typeof track.id !== 'number') { this._updateFavBtn(false); return; }
+    const kind = track.kind || 'local';
+    try {
+      const tags = await api.get(`/tracks/${kind}/${track.id}/tags`);
+      this._updateFavBtn(tags.some(t => t.name === '我喜欢'));
+    } catch { this._updateFavBtn(false); }
+  },
+
+  // ── ⏩ Playback speed ──────────────────────────────────────────
+  _cycleSpeed() {
+    this._speedIdx = (this._speedIdx + 1) % SPEED_STEPS.length;
+    const speed = SPEED_STEPS[this._speedIdx];
+    this.audio.playbackRate = speed;
+    document.getElementById('btn-speed').textContent = speed === 1 ? '1x' : speed + 'x';
+    showToast(`播放速度 ${speed}x`);
+  },
+
+  // ── 🔀 Crossfade ──────────────────────────────────────────────
+  _applyCrossfade() {
+    if (!this._crossfade || !this.audio.duration) return;
+    const remaining = this.audio.duration - this.audio.currentTime;
+    if (remaining <= this._crossfade && remaining > 0.3 && !this._crossfading) {
+      this._crossfading = true;
+      // Fade out current
+      const fadeOut = setInterval(() => {
+        if (this.audio.volume > 0.02) this.audio.volume -= 0.02;
+        else { clearInterval(fadeOut); this._crossfading = false; }
+      }, this._crossfade * 1000 / 50);
+    }
+  },
+
+  // ── 🎵 Audio visualizer ──────────────────────────────────────
+  _initAudioContext() {
+    try {
+      this._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      this._analyser = this._audioCtx.createAnalyser();
+      this._analyser.fftSize = 128;
+      const source = this._audioCtx.createMediaElementSource(this.audio);
+      source.connect(this._analyser);
+      this._analyser.connect(this._audioCtx.destination);
+    } catch { /* Web Audio not available */ }
+  },
+  _startVisualizer() {
+    if (!this._analyser) return;
+    if (this._audioCtx.state === 'suspended') this._audioCtx.resume();
+    const canvas = document.getElementById('np-visualizer');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const bufLen = this._analyser.frequencyBinCount;
+    const data = new Uint8Array(bufLen);
+    const draw = () => {
+      this._vizRAF = requestAnimationFrame(draw);
+      this._analyser.getByteFrequencyData(data);
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const barW = canvas.width / bufLen * 2;
+      const accent = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim() || '#007AFF';
+      ctx.fillStyle = accent;
+      for (let i = 0; i < bufLen; i++) {
+        const h = (data[i] / 255) * canvas.height;
+        ctx.globalAlpha = 0.4 + (data[i] / 255) * 0.6;
+        ctx.fillRect(i * barW, canvas.height - h, barW - 1, h);
+      }
+      ctx.globalAlpha = 1;
+    };
+    draw();
+  },
+  _stopVisualizer() {
+    if (this._vizRAF) { cancelAnimationFrame(this._vizRAF); this._vizRAF = null; }
   },
 };
 
@@ -780,6 +898,7 @@ function renderLocalView() {
   let html = `<div class="view-header">
     <div style="display:flex;align-items:center;gap:12px">
       <div class="view-title">本地音乐</div>
+      <button class="btn btn-ghost" data-act="shuffle-all" style="font-size:0.78rem;padding:3px 10px" title="随机播放全部">🎲 随机</button>
       <div class="subtab-row">
         <button class="subtab ${sub==='all'?'active':''}" data-act="local-sub" data-sub="all">全部</button>
         <button class="subtab ${sub==='albums'?'active':''}" data-act="local-sub" data-sub="albums">专辑</button>
@@ -1335,6 +1454,16 @@ function renderSettingsView() {
         <span>${s.volume || 80}%</span>
       </div>
       <div class="settings-row">
+        <div><div class="settings-row-label">交叉淡入淡出</div>
+          <div class="settings-row-sub">切歌时渐隐渐入，避免突兀</div></div>
+        <div style="display:flex;gap:4px">
+          ${['0','2','4','6'].map(sec => `
+            <button class="btn ${(s.crossfade||'0')===sec ? 'btn-primary' : 'btn-ghost'}"
+                    data-act="set-crossfade" data-sec="${sec}" style="padding:4px 10px;font-size:0.8rem">${sec === '0' ? '关' : sec + '秒'}</button>
+          `).join('')}
+        </div>
+      </div>
+      <div class="settings-row">
         <div class="settings-row-label">显示歌词翻译</div>
         <button class="btn btn-ghost" id="btn-toggle-tlyric">
           ${s.lyric_show_translation !== 'false' ? '✓ 已开启' : '✗ 已关闭'}</button>
@@ -1402,6 +1531,70 @@ function renderSettingsView() {
   return html;
 }
 
+// ── Stats view ───────────────────────────────────────────────────
+function renderStatsView() {
+  const s = state._stats;
+  if (!s) {
+    // Fetch stats async then re-render
+    api.get('/stats').then(d => { state._stats = d; if (state.view === 'stats') render(); });
+    return '<div class="search-loading"><div class="search-spinner"></div><span>加载统计数据...</span></div>';
+  }
+  const hours = Math.round(s.total_ms / 3600000);
+  const mins = Math.round(s.total_ms / 60000);
+  let html = `<div class="view-header"><div class="view-title">听歌统计</div></div>`;
+
+  // Summary cards
+  html += `<div class="stats-cards">
+    <div class="stat-card"><div class="stat-num">${s.total_plays}</div><div class="stat-label">总播放次数</div></div>
+    <div class="stat-card"><div class="stat-num">${hours > 0 ? hours + 'h' : mins + 'min'}</div><div class="stat-label">总听歌时长</div></div>
+    <div class="stat-card"><div class="stat-num">${s.local_count}</div><div class="stat-label">本地曲目</div></div>
+    <div class="stat-card"><div class="stat-num">${s.online_count}</div><div class="stat-label">在线收藏</div></div>
+  </div>`;
+
+  // Daily chart (last 30 days) — simple bar chart with CSS
+  if (s.daily?.length) {
+    const maxPlays = Math.max(...s.daily.map(d => d.plays), 1);
+    html += `<div class="settings-section-title" style="margin-top:16px">最近 30 天</div>`;
+    html += `<div class="stats-chart">${s.daily.map(d => {
+      const pct = Math.round(d.plays / maxPlays * 100);
+      const day = d.day.slice(5); // MM-DD
+      return `<div class="chart-bar-wrap" title="${d.day}: ${d.plays} 首">
+        <div class="chart-bar" style="height:${pct}%"></div>
+        <div class="chart-label">${day}</div>
+      </div>`;
+    }).join('')}</div>`;
+  }
+
+  // Top artists
+  if (s.top_artists?.length) {
+    html += `<div class="settings-section-title">最爱艺人 Top ${s.top_artists.length}</div>`;
+    html += '<div class="stats-list">' + s.top_artists.map((a, i) =>
+      `<div class="stats-item"><span class="stats-rank">${i + 1}</span><span class="stats-name">${esc(a.artist)}</span><span class="stats-count">${a.plays} 次</span></div>`
+    ).join('') + '</div>';
+  }
+
+  // Top tracks
+  if (s.top_tracks?.length) {
+    html += `<div class="settings-section-title">最爱曲目 Top ${s.top_tracks.length}</div>`;
+    html += '<div class="stats-list">' + s.top_tracks.map((t, i) =>
+      `<div class="stats-item"><span class="stats-rank">${i + 1}</span><span class="stats-name">${esc(t.title)} <span style="color:var(--text-tertiary)">- ${esc(t.artist || '')}</span></span><span class="stats-count">${t.plays} 次</span></div>`
+    ).join('') + '</div>';
+  }
+
+  // Duplicate detection
+  html += `<div class="settings-section-title" style="margin-top:16px">重复曲目检测
+    <button class="btn btn-ghost" style="font-size:0.72rem;padding:2px 8px;margin-left:8px" id="btn-check-dupes">检测</button></div>`;
+  if (state._dupes?.length) {
+    html += '<div class="stats-list">' + state._dupes.map(d =>
+      `<div class="stats-item"><span class="stats-name">${esc(d.title)} - ${esc(d.artist || '未知')}</span><span class="stats-count">${d.cnt} 份 (IDs: ${d.ids})</span></div>`
+    ).join('') + '</div>';
+  } else if (state._dupes) {
+    html += '<div style="padding:12px;color:var(--text-tertiary);text-align:center">没有发现重复曲目</div>';
+  }
+
+  return html;
+}
+
 // ── Render engine ─────────────────────────────────────────────────
 function render() {
   const vc = document.getElementById('view-container');
@@ -1411,6 +1604,7 @@ function render() {
     case 'tags':     vc.innerHTML = renderTagsView(); break;
     case 'playlists': vc.innerHTML = renderPlaylistsView(); break;
     case 'history':   vc.innerHTML = renderHistoryView(); break;
+    case 'stats':     vc.innerHTML = renderStatsView(); break;
     case 'settings':  vc.innerHTML = renderSettingsView(); break;
     default:          vc.innerHTML = renderLocalView();
   }
@@ -1974,6 +2168,16 @@ function bindViewEvents() {
     }
   });
 
+  // ── Crossfade setting ──────────────────────────────────────────
+  document.querySelectorAll('[data-act="set-crossfade"]').forEach(btn => {
+    btn.onclick = async () => {
+      await api.put('/settings', { crossfade: btn.dataset.sec });
+      state.settings.crossfade = btn.dataset.sec;
+      player._crossfade = parseInt(btn.dataset.sec, 10);
+      render();
+    };
+  });
+
   // ── Lyric translation toggle ──────────────────────────────────
   document.getElementById('btn-toggle-tlyric')?.addEventListener('click', async () => {
     const cur = state.settings.lyric_show_translation !== 'false';
@@ -2021,6 +2225,30 @@ function bindViewEvents() {
     const cur = state.settings.proxy_allow_outbound === 'true';
     await api.put('/settings', { proxy_allow_outbound: cur ? 'false' : 'true' });
     state.settings.proxy_allow_outbound = cur ? 'false' : 'true';
+    render();
+  });
+
+  // ── 🎲 Shuffle all ────────────────────────────────────────────
+  document.querySelector('[data-act="shuffle-all"]')?.addEventListener('click', () => {
+    const all = [
+      ...state.localTracks.map(t => ({ ...t, kind: 'local' })),
+      ...state.onlineTracks.map(t => ({ ...t, kind: 'online' })),
+    ];
+    if (!all.length) { showToast('没有可播放的曲目'); return; }
+    // Fisher-Yates shuffle
+    for (let i = all.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [all[i], all[j]] = [all[j], all[i]];
+    }
+    player.shuffle = true;
+    player._updateModeButtons();
+    player.playTrack(all[0], all, 0);
+    showToast(`随机播放 ${all.length} 首`);
+  });
+
+  // ── 📊 Stats: duplicate check ─────────────────────────────────
+  document.getElementById('btn-check-dupes')?.addEventListener('click', async () => {
+    state._dupes = await api.get('/local/duplicates');
     render();
   });
 
@@ -2309,6 +2537,7 @@ function bindNav() {
       state.searchQuery = '';
       state._trackPage = 0;
       state._searchNoResults = false;
+      if (btn.dataset.view === 'stats') state._stats = null;  // refresh stats
       document.querySelectorAll('.nav-btn[data-view]').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       render();
@@ -2317,6 +2546,87 @@ function bindNav() {
 }
 
 // ── Global keyboard shortcuts ────────────────────────────────────
+// ── 🔍 Global search (Cmd/Ctrl+K) ──────────────────────────────
+function doGlobalSearch(q) {
+  if (!q) return;
+  const lower = q.toLowerCase();
+  const results = [];
+  // Search local tracks
+  state.localTracks.forEach(t => {
+    if ((t.title + t.artist + t.album).toLowerCase().includes(lower))
+      results.push({ ...t, kind: 'local', _type: '本地' });
+  });
+  // Search online tracks
+  state.onlineTracks.forEach(t => {
+    if ((t.title + t.artist + t.album).toLowerCase().includes(lower))
+      results.push({ ...t, kind: 'online', _type: '在线' });
+  });
+  // Search playlists
+  state.playlists.forEach(p => {
+    if (p.name.toLowerCase().includes(lower))
+      results.push({ _type: '歌单', _playlist: p, title: p.name, artist: `${p.item_count || 0} 首` });
+  });
+  return results.slice(0, 30);
+}
+
+function showGlobalSearch() {
+  let overlay = document.getElementById('global-search-overlay');
+  if (overlay) { overlay.remove(); return; }
+  overlay = document.createElement('div');
+  overlay.id = 'global-search-overlay';
+  overlay.className = 'global-search-overlay';
+  overlay.innerHTML = `
+    <div class="global-search-box">
+      <input type="search" id="global-search-input" placeholder="搜索本地 / 在线 / 歌单..." autofocus>
+      <div id="global-search-results" class="global-search-results"></div>
+    </div>`;
+  document.body.appendChild(overlay);
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  const input = document.getElementById('global-search-input');
+  input.oninput = () => {
+    const results = doGlobalSearch(input.value.trim());
+    const el = document.getElementById('global-search-results');
+    if (!results?.length) { el.innerHTML = input.value ? '<div style="padding:16px;text-align:center;color:var(--text-tertiary)">无结果</div>' : ''; return; }
+    el.innerHTML = results.map((r, i) => `
+      <div class="gs-item" data-gs-idx="${i}">
+        <span class="gs-type">${r._type}</span>
+        <span class="gs-title">${esc(r.title || '')}</span>
+        <span class="gs-artist">${esc(r.artist || '')}</span>
+      </div>`).join('');
+    el.querySelectorAll('.gs-item').forEach((item, i) => {
+      item.onclick = () => {
+        const r = results[i];
+        overlay.remove();
+        if (r._playlist) {
+          state.view = 'playlists';
+          api.get(`/playlists/${r._playlist.id}`).then(d => { state.activePlaylist = d; render(); });
+        } else {
+          player.playTrack(r, [r], 0);
+        }
+      };
+    });
+  };
+  input.onkeydown = (e) => { if (e.key === 'Escape') overlay.remove(); };
+}
+
+// ── 📱 Mobile swipe gestures ────────────────────────────────────
+function bindGestures() {
+  let touchStartX = 0, touchStartY = 0;
+  const bar = document.getElementById('player-bar');
+  if (!bar) return;
+  bar.addEventListener('touchstart', (e) => {
+    touchStartX = e.touches[0].clientX;
+    touchStartY = e.touches[0].clientY;
+  }, { passive: true });
+  bar.addEventListener('touchend', (e) => {
+    const dx = e.changedTouches[0].clientX - touchStartX;
+    const dy = e.changedTouches[0].clientY - touchStartY;
+    if (Math.abs(dx) < 50 || Math.abs(dy) > Math.abs(dx)) return; // too short or vertical
+    if (dx > 0) player.next();
+    else player.prev();
+  }, { passive: true });
+}
+
 function bindGlobalKeys() {
   document.addEventListener('keydown', (e) => {
     // Ignore when typing in an input/textarea
@@ -2354,6 +2664,12 @@ function bindGlobalKeys() {
         if (e.metaKey || e.ctrlKey) { // Cmd/Ctrl+M = mute toggle
           e.preventDefault();
           player.audio.muted = !player.audio.muted;
+        }
+        break;
+      case 'KeyK':
+        if (e.metaKey || e.ctrlKey) { // Cmd/Ctrl+K = global search
+          e.preventDefault();
+          showGlobalSearch();
         }
         break;
     }
@@ -2433,6 +2749,7 @@ async function boot() {
   bindNav();
   bindNowPlaying();
   bindGlobalKeys();
+  bindGestures();
 
   const [tracks, onlineTracks, tags, settings, sources, playlists] = await Promise.all([
     api.get('/local/tracks'),

@@ -28,6 +28,7 @@
             <button class="nav-btn" data-view="tags"><span class="nav-ico">🏷</span><span class="nav-txt">标签</span></button>
             <button class="nav-btn" data-view="playlists"><span class="nav-ico">📋</span><span class="nav-txt">歌单</span></button>
             <button class="nav-btn" data-view="history"><span class="nav-ico">📅</span><span class="nav-txt">历史</span></button>
+            <button class="nav-btn" data-view="stats"><span class="nav-ico">📊</span><span class="nav-txt">统计</span></button>
             <button class="nav-btn" data-view="settings"><span class="nav-ico">⚙</span><span class="nav-txt">设置</span></button>
           </div>
         </div>
@@ -57,6 +58,8 @@
             <span class="player-time" id="player-time-dur">0:00</span>
           </div>
           <div class="player-extra">
+            <button class="player-btn small" id="btn-fav" title="喜欢">♡</button>
+            <button class="player-btn small" id="btn-speed" title="倍速" style="font-size:0.65rem">1x</button>
             <button class="player-btn small" id="btn-queue" title="播放队列">📜</button>
             <span class="vol-ico">🔊</span>
             <input type="range" class="volume-slider" id="volume-slider" min="0" max="100" value="80">
@@ -84,6 +87,7 @@
       <div class="np-artist" id="np-artist-lg"></div>
       <div class="np-album" id="np-album-lg"></div>
     </div>
+    <canvas id="np-visualizer" class="np-visualizer" width="300" height="60"></canvas>
     <div class="np-lyrics" id="np-lyrics"></div>
     <div class="np-note-area">
       <textarea class="np-note" id="np-note" placeholder="写点笔记...（自动保存）"></textarea>
