@@ -1351,6 +1351,132 @@ def resolve_url():
     return jsonify({'error': 'no_url', 'msg': '无法获取播放链接'}), 404
 
 
+@app.route('/api/online/stream')
+def stream_online():
+    """Proxy-stream a remote audio URL through the server.
+
+    This solves the CORS / Web Audio muting issue: the browser sees a
+    same-origin URL so createMediaElementSource works for the visualizer.
+    Also handles Referer-gated CDNs.
+    """
+    url = request.args.get('url', '')
+    if not url or not url.startswith('http'):
+        abort(400)
+    try:
+        # Stream with range support for seeking
+        headers = {'User-Agent': _SEARCH_UA}
+        if request.headers.get('Range'):
+            headers['Range'] = request.headers['Range']
+        r = req_lib.get(url, headers=headers, stream=True, timeout=30,
+                        allow_redirects=True)
+        resp_headers = {
+            'Content-Type': r.headers.get('Content-Type', 'audio/mpeg'),
+            'Accept-Ranges': 'bytes',
+            'Access-Control-Allow-Origin': '*',
+        }
+        if r.headers.get('Content-Length'):
+            resp_headers['Content-Length'] = r.headers['Content-Length']
+        if r.headers.get('Content-Range'):
+            resp_headers['Content-Range'] = r.headers['Content-Range']
+        return Response(
+            r.iter_content(chunk_size=8192),
+            status=r.status_code,
+            headers=resp_headers,
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 502
+
+
+# ---------------------------------------------------------------------------
+# Platform login support (QQ音乐 / 酷狗 — cookie-based auth)
+# ---------------------------------------------------------------------------
+
+def _resolve_tx_with_cookie(songmid, quality):
+    """QQ 音乐 — with user's login cookie for VIP tracks."""
+    import random, string
+    conn = get_db()
+    ck = conn.execute("SELECT value FROM settings WHERE key='tx_cookie'").fetchone()
+    conn.close()
+    if not ck or not ck['value']:
+        return None
+    guid = ''.join(random.choices(string.digits, k=10))
+    file_type = 'F000' if quality in ('flac', 'flac24bit') else ('M800' if quality == '320k' else 'C400')
+    ext = '.flac' if quality in ('flac', 'flac24bit') else ('.mp3' if quality == '320k' else '.m4a')
+    filename = f'{file_type}{songmid}{ext}'
+    # Extract uin from cookie
+    import re
+    uin_match = re.search(r'uin=(\d+)', ck['value'])
+    uin = uin_match.group(1) if uin_match else '0'
+    params = {
+        'format': 'json',
+        'data': json.dumps({
+            'req_0': {
+                'module': 'vkey.GetVkeyServer',
+                'method': 'CgiGetVkey',
+                'param': {
+                    'guid': guid, 'songmid': [songmid], 'songtype': [0],
+                    'uin': uin, 'loginflag': 1, 'platform': '20',
+                    'filename': [filename],
+                }
+            }
+        })
+    }
+    r = req_lib.get(
+        'https://u.y.qq.com/cgi-bin/musics.fcg', params=params,
+        headers={'User-Agent': _SEARCH_UA, 'Referer': 'https://y.qq.com',
+                 'Cookie': ck['value']},
+        timeout=10,
+    )
+    data = r.json()
+    midi = data.get('req_0', {}).get('data', {}).get('midurlinfo', [])
+    sip = data.get('req_0', {}).get('data', {}).get('sip', ['http://ws.stream.qqmusic.qq.com/'])
+    if midi and midi[0].get('purl'):
+        return (sip[0] if sip else 'http://ws.stream.qqmusic.qq.com/') + midi[0]['purl']
+    return None
+
+
+def _resolve_kg_with_cookie(songmid, quality):
+    """酷狗 — with user's login cookie."""
+    conn = get_db()
+    ck = conn.execute("SELECT value FROM settings WHERE key='kg_cookie'").fetchone()
+    conn.close()
+    if not ck or not ck['value']:
+        return None
+    h = songmid  # for kg, songmid is the hash
+    r = req_lib.get(
+        'https://wwwapi.kugou.com/yy/index.php',
+        params={'r': 'play/getdata', 'hash': h},
+        headers={'User-Agent': _SEARCH_UA, 'Cookie': ck['value']},
+        timeout=8,
+    )
+    data = r.json()
+    url = data.get('data', {}).get('play_url', '')
+    return url if url and url.startswith('http') else None
+
+
+# Patch the resolve map to try cookie-based resolvers first
+_orig_resolve_tx = _PLATFORM_RESOLVE['tx']
+_orig_resolve_kg = _PLATFORM_RESOLVE['kg']
+
+
+def _resolve_tx_combined(songmid, quality):
+    url = _resolve_tx_with_cookie(songmid, quality)
+    if url:
+        return url
+    return _orig_resolve_tx(songmid, quality)
+
+
+def _resolve_kg_combined(songmid, quality):
+    url = _resolve_kg_with_cookie(songmid, quality)
+    if url:
+        return url
+    return _orig_resolve_kg(songmid, quality)
+
+
+_PLATFORM_RESOLVE['tx'] = _resolve_tx_combined
+_PLATFORM_RESOLVE['kg'] = _resolve_kg_combined
+
+
 @app.route('/api/online/import', methods=['POST'])
 def online_import():
     """Import a playlist. Supports LX Music export (.lxmf JSON) and m3u/m3u8."""

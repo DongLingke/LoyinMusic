@@ -516,13 +516,15 @@ const player = {
       try {
         const r = await api.get(`/online/resolve?source=${track.source}&songmid=${encodeURIComponent(songmid)}&quality=${preferred}`);
         if (r.url) {
-          // Cache it
+          // Proxy through our server to avoid CORS / Web Audio muting
+          const streamUrl = `/api/online/stream?url=${encodeURIComponent(r.url)}`;
+          // Cache the stream URL
           if (typeof track.id === 'number' && track.id > 0) {
             api.put(`/online/tracks/${track.id}`, {
-              url_cache: r.url, url_cache_at: new Date().toISOString(), url_cache_q: r.quality || preferred,
+              url_cache: streamUrl, url_cache_at: new Date().toISOString(), url_cache_q: r.quality || preferred,
             });
           }
-          return r.url;
+          return streamUrl;
         }
       } catch { /* built-in resolver failed, try LX source */ }
     }
@@ -1670,6 +1672,35 @@ function renderSettingsView() {
     </div>
   </details>`;
 
+  // Platform login (QQ音乐 / 酷狗)
+  html += `<details class="settings-section">
+    <summary class="settings-section-title">平台登录</summary>
+    <div class="settings-group">
+      <div class="settings-row" style="flex-direction:column;align-items:stretch;gap:6px">
+        <div><div class="settings-row-label">QQ 音乐 Cookie</div>
+          <div class="settings-row-sub">登录 y.qq.com 后，从浏览器开发者工具复制 Cookie</div></div>
+        <div style="display:flex;gap:6px">
+          <input type="text" class="settings-input" id="input-tx-cookie"
+            placeholder="粘贴 Cookie..." value="${esc(s.tx_cookie || '')}"
+            style="flex:1;font-size:0.75rem;padding:6px 8px;border-radius:6px;border:1px solid var(--divider);background:var(--item-glass);color:var(--text-primary)">
+          <button class="btn btn-primary" id="btn-save-tx-cookie" style="flex-shrink:0">保存</button>
+        </div>
+        <div class="settings-row-sub">${s.tx_cookie ? '✓ 已设置' : '未登录 — QQ 音乐播放受限'}</div>
+      </div>
+      <div class="settings-row" style="flex-direction:column;align-items:stretch;gap:6px">
+        <div><div class="settings-row-label">酷狗 Cookie</div>
+          <div class="settings-row-sub">登录 kugou.com 后，从浏览器开发者工具复制 Cookie</div></div>
+        <div style="display:flex;gap:6px">
+          <input type="text" class="settings-input" id="input-kg-cookie"
+            placeholder="粘贴 Cookie..." value="${esc(s.kg_cookie || '')}"
+            style="flex:1;font-size:0.75rem;padding:6px 8px;border-radius:6px;border:1px solid var(--divider);background:var(--item-glass);color:var(--text-primary)">
+          <button class="btn btn-primary" id="btn-save-kg-cookie" style="flex-shrink:0">保存</button>
+        </div>
+        <div class="settings-row-sub">${s.kg_cookie ? '✓ 已设置' : '未登录 — 酷狗播放受限'}</div>
+      </div>
+    </div>
+  </details>`;
+
   // Advanced
   html += `<details class="settings-section">
     <summary class="settings-section-title">高级</summary>
@@ -2440,6 +2471,22 @@ function bindViewEvents() {
         bindViewEvents();
       }
     });
+  });
+
+  // ── Platform login (QQ / 酷狗 cookie) ─────────────────────────
+  document.getElementById('btn-save-tx-cookie')?.addEventListener('click', async () => {
+    const val = document.getElementById('input-tx-cookie')?.value || '';
+    await api.put('/settings', { tx_cookie: val.trim() });
+    state.settings.tx_cookie = val.trim();
+    showToast(val.trim() ? 'QQ 音乐 Cookie 已保存' : 'QQ 音乐 Cookie 已清除');
+    render();
+  });
+  document.getElementById('btn-save-kg-cookie')?.addEventListener('click', async () => {
+    const val = document.getElementById('input-kg-cookie')?.value || '';
+    await api.put('/settings', { kg_cookie: val.trim() });
+    state.settings.kg_cookie = val.trim();
+    showToast(val.trim() ? '酷狗 Cookie 已保存' : '酷狗 Cookie 已清除');
+    render();
   });
 
   // ── Proxy toggle ──────────────────────────────────────────────
