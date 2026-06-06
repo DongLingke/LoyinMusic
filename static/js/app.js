@@ -737,15 +737,32 @@ const player = {
   async _loadLyrics(track) {
     let lrc = track.lyric_cache || '';
     let tlyric = '';
-    // Try fetching from source sandbox
-    if (!lrc && track.kind === 'online' && track.source && track.source !== 'url' && window.sourceHost) {
-      try {
-        const info = track.source_meta ? JSON.parse(track.source_meta) : { songmid: track.source_id };
-        const result = await window.sourceHost.request(track.source, 'lyric', { musicInfo: info });
-        if (result && typeof result === 'object') { lrc = result.lyric || ''; tlyric = result.tlyric || ''; }
-        else if (typeof result === 'string') lrc = result;
-        if (lrc && track.id) api.put(`/online/tracks/${track.id}`, { lyric_cache: lrc });
-      } catch {}
+
+    if (!lrc && track.kind === 'online' && track.source && track.source !== 'url') {
+      const musicInfo = track.source_meta ? JSON.parse(track.source_meta) : { songmid: track.source_id };
+      const songmid = musicInfo.songmid || track.source_id;
+
+      // 1) Try built-in lyrics API first (wy/kw)
+      if (songmid) {
+        try {
+          const d = await api.get(`/online/lyrics?source=${track.source}&songmid=${encodeURIComponent(songmid)}`);
+          if (d.lrc) { lrc = d.lrc; tlyric = d.tlyric || ''; }
+        } catch {}
+      }
+
+      // 2) Fallback: LX source sandbox
+      if (!lrc && window.sourceHost) {
+        try {
+          const result = await window.sourceHost.request(track.source, 'lyric', { musicInfo }, 8000);
+          if (result && typeof result === 'object') { lrc = result.lyric || ''; tlyric = result.tlyric || ''; }
+          else if (typeof result === 'string') lrc = result;
+        } catch {}
+      }
+
+      // Cache
+      if (lrc && typeof track.id === 'number' && track.id > 0) {
+        api.put(`/online/tracks/${track.id}`, { lyric_cache: lrc });
+      }
     }
     this.lyrics = parseLrc(lrc, tlyric);
     this._renderLyrics();
@@ -938,6 +955,7 @@ function renderTrackTable(tracks, kindCol = false) {
       <td class="td-duration">${fmtTime(t.duration_ms)}</td>
       <td class="td-actions">
         <button class="btn-tag-action" data-act="play-next" data-kind="${kind}" data-id="${id}" title="下一首播放">⏭</button>
+        <button class="btn-tag-action" data-act="download-track" data-kind="${kind}" data-id="${id}" title="下载">⬇</button>
         <button class="btn-tag-action" data-act="add-to-playlist" data-kind="${kind}" data-id="${id}" title="加入歌单">➕</button>
         <button class="btn-tag-action" data-act="open-tagger" data-kind="${kind}" data-id="${id}" title="标签">🏷</button>
         <button class="btn-tag-action" data-act="del-track" data-kind="${kind}" data-id="${id}" title="删除" style="opacity:0.4">✕</button>
@@ -2019,6 +2037,44 @@ function bindViewEvents() {
       const pool = kind === 'local' ? state.localTracks : state.onlineTracks;
       const track = pool.find(t => t.id === id);
       if (track) player.playNext({ ...track, kind, id });
+    };
+  });
+
+  // ── Download track ─────────────────────────────────────────────
+  document.querySelectorAll('[data-act="download-track"]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const kind = btn.dataset.kind, id = parseInt(btn.dataset.id, 10);
+      if (kind === 'local') {
+        // Local: direct download from server
+        const a = document.createElement('a');
+        a.href = `/api/local/stream/${id}`;
+        a.download = '';
+        a.click();
+        return;
+      }
+      // Online: resolve URL then download via stream proxy
+      const pool = state.onlineTracks;
+      const track = pool.find(t => t.id === id);
+      if (!track) return;
+      showToast('正在获取下载链接...');
+      try {
+        const musicInfo = track.source_meta ? JSON.parse(track.source_meta) : { songmid: track.source_id };
+        const songmid = musicInfo.songmid || track.source_id;
+        const quality = state.settings.default_quality_online || '320k';
+        const r = await api.get(`/online/resolve?source=${track.source}&songmid=${encodeURIComponent(songmid)}&quality=${quality}`);
+        if (r.url) {
+          const a = document.createElement('a');
+          a.href = `/api/online/stream?url=${encodeURIComponent(r.url)}`;
+          a.download = `${track.artist || 'Unknown'} - ${track.title || 'Unknown'}.mp3`;
+          a.click();
+          showToast('开始下载');
+        } else {
+          showToast('无法获取下载链接', 'error');
+        }
+      } catch {
+        showToast('下载失败', 'error');
+      }
     };
   });
 

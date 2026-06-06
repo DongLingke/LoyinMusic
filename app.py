@@ -1351,6 +1351,69 @@ def resolve_url():
     return jsonify({'error': 'no_url', 'msg': '无法获取播放链接'}), 404
 
 
+# ---------------------------------------------------------------------------
+# Built-in lyrics resolver
+# ---------------------------------------------------------------------------
+
+def _lyrics_wy(songmid):
+    """网易云歌词 (原文 + 翻译)"""
+    r = req_lib.get(
+        'https://music.163.com/api/song/lyric',
+        params={'id': songmid, 'lv': 1, 'tv': 1},
+        headers={'User-Agent': _SEARCH_UA, 'Referer': 'https://music.163.com'},
+        timeout=8,
+    )
+    data = r.json()
+    lrc = data.get('lrc', {}).get('lyric', '')
+    tlyric = data.get('tlyric', {}).get('lyric', '')
+    return lrc, tlyric
+
+
+def _lyrics_kw(songmid):
+    """酷我歌词"""
+    r = req_lib.get(
+        f'http://m.kuwo.cn/newh5/singles/songinfoandlrc',
+        params={'musicId': songmid},
+        headers={'User-Agent': _SEARCH_UA},
+        timeout=8,
+    )
+    data = r.json()
+    lrc_list = data.get('data', {}).get('lrclist', [])
+    if not lrc_list:
+        return '', ''
+    # Convert kuwo format [{time:"xx.xx", lineLyric:"..."}] to LRC
+    lines = []
+    for item in lrc_list:
+        t = float(item.get('time', 0))
+        m, s = int(t // 60), t % 60
+        lines.append(f'[{m:02d}:{s:05.2f}]{item.get("lineLyric", "")}')
+    return '\n'.join(lines), ''
+
+
+_PLATFORM_LYRICS = {
+    'wy': _lyrics_wy,
+    'kw': _lyrics_kw,
+}
+
+
+@app.route('/api/online/lyrics')
+def get_lyrics():
+    """Get lyrics for a song by platform + songmid."""
+    source = request.args.get('source', '')
+    songmid = request.args.get('songmid', '')
+    if not source or not songmid:
+        return jsonify({'lrc': '', 'tlyric': ''})
+    fn = _PLATFORM_LYRICS.get(source)
+    if not fn:
+        return jsonify({'lrc': '', 'tlyric': ''})
+    try:
+        lrc, tlyric = fn(songmid)
+        return jsonify({'lrc': lrc, 'tlyric': tlyric})
+    except Exception as e:
+        print(f'[lyrics] {source}/{songmid}: {e}', file=sys.stderr)
+        return jsonify({'lrc': '', 'tlyric': ''})
+
+
 @app.route('/api/online/stream')
 def stream_online():
     """Proxy-stream a remote audio URL through the server.
