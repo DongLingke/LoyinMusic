@@ -33,7 +33,7 @@ const api = {
 
 // ── State ─────────────────────────────────────────────────────────
 const state = {
-  view: 'local',
+  view: 'online',
   localTracks: [],
   onlineTracks: [],
   tags: [],
@@ -99,21 +99,16 @@ const UI_STYLES = [
   { key: 'terminal',     name: '终端' },
 ];
 
-// Color schemes (ported from Daynote). 'extract' = derive accent from cover.
+// Color schemes. 'extract' = derive accent from cover art.
 const COLOR_SCHEMES = [
-  { key: 'extract',  name: '自动取色', color: '#888888' },
-  { key: 'ocean',    name: '海洋',     color: '#0A84FF' },
-  { key: 'morandi',  name: '莫兰迪',   color: '#8B7D6B' },
-  { key: 'sakura',   name: '樱花',     color: '#E8829A' },
-  { key: 'forest',   name: '森林',     color: '#30A84E' },
-  { key: 'sunset',   name: '日落',     color: '#FF6B35' },
-  { key: 'lavender', name: '薰衣草',   color: '#9B7BC9' },
-  { key: 'mint',     name: '薄荷',     color: '#3DC4A0' },
-  { key: 'rose',     name: '玫瑰',     color: '#D24A6B' },
-  { key: 'amber',    name: '琥珀',     color: '#C77F2D' },
-  { key: 'graphite', name: '石墨',     color: '#5C5C66' },
-  { key: 'sky',      name: '天空',     color: '#56A0C7' },
-  { key: 'cherry',   name: '樱桃',     color: '#C0392B' },
+  { key: 'extract',  name: '自动',   color: '#888888' },
+  { key: 'ocean',    name: '海洋',   color: '#0A84FF' },
+  { key: 'sakura',   name: '樱花',   color: '#E8829A' },
+  { key: 'forest',   name: '森林',   color: '#30A84E' },
+  { key: 'sunset',   name: '日落',   color: '#FF6B35' },
+  { key: 'lavender', name: '薰衣草', color: '#9B7BC9' },
+  { key: 'amber',    name: '琥珀',   color: '#C77F2D' },
+  { key: 'graphite', name: '石墨',   color: '#5C5C66' },
 ];
 
 // Apply wallpaper + theme + UI style + card params to the DOM. Reads settings.
@@ -1202,8 +1197,48 @@ function renderTagsView() {
 function renderPlaylistsView() {
   let html = `<div class="view-header">
     <div class="view-title">歌单</div>
-    <button class="btn btn-primary" id="btn-add-playlist">+ 新建歌单</button>
+    <div style="display:flex;gap:6px">
+      <button class="btn btn-ghost" id="btn-add-tag">+ 标签</button>
+      <button class="btn btn-ghost" id="btn-add-smart-tag">+ 智能标签</button>
+      <button class="btn btn-primary" id="btn-add-playlist">+ 新建歌单</button>
+    </div>
   </div>`;
+
+  // Tags section (merged from tags view)
+  if (!state.activePlaylist && !state.activeTagId) {
+    const userTags = state.tags.filter(t => t.kind !== 'smart');
+    const smartTags = state.tags.filter(t => t.kind === 'smart');
+    if (state.tags.length) {
+      const chip = t => {
+        const isSmart = t.kind === 'smart';
+        const colorStyle = t.color ? `border-left:3px solid ${t.color};` : '';
+        return `<div class="tag-chip ${isSmart ? 'smart' : ''}" data-act="select-tag" data-tag-id="${t.id}" style="${colorStyle}">
+          <span>${isSmart ? '⚡ ' : ''}${esc(t.name)}</span>
+          <span class="tag-remove" data-act="del-tag" data-id="${t.id}">&times;</span>
+        </div>`;
+      };
+      html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">';
+      html += [...smartTags, ...userTags].map(chip).join('');
+      html += '</div>';
+    }
+  }
+
+  // Tag drill-down
+  if (state.activeTagId && !state.activePlaylist) {
+    const tag = state.tags.find(t => t.id === state.activeTagId);
+    html += `<div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+      <button class="btn btn-ghost" data-act="back-from-tag">← 返回</button>
+      <span class="view-title" style="font-size:1.05rem">${tag ? esc(tag.name) : ''}</span>
+    </div>`;
+    if (state.tagTracks.length) {
+      html += renderTrackTable(state.tagTracks.map(t => ({
+        ...t, kind: t.track_kind, id: t.track_id,
+      })), true);
+    } else {
+      html += '<div style="padding:20px;color:var(--text-tertiary);text-align:center">这个标签下还没有曲目</div>';
+    }
+    return html;
+  }
 
   if (state.activePlaylist) {
     const { playlist, items } = state.activePlaylist;
@@ -1338,7 +1373,7 @@ function renderSettingsView() {
     <summary class="settings-section-title">外观 <button class="btn btn-ghost reset-btn" data-act="reset-section" data-section="appearance" style="font-size:0.7rem;padding:2px 8px;margin-left:8px">恢复默认</button></summary>
     <div class="settings-group">
       <div class="settings-row" style="flex-direction:column;align-items:stretch;gap:10px">
-        <div class="settings-row-label">壁纸图片</div>
+        <div class="settings-row-label">壁纸</div>
         <div class="wp-img-grid">
           ${WALLPAPER_IMAGES.map(fn => `
             <div class="wp-img ${!s.wallpaper_url && curWp === fn ? 'active' : ''}"
@@ -1346,14 +1381,11 @@ function renderSettingsView() {
               <img src="/static/wallpapers/${fn}" loading="lazy" alt="">
             </div>
           `).join('')}
-        </div>
-        <div class="settings-row-label" style="margin-top:6px">渐变壁纸</div>
-        <div class="wp-grid">
           ${Object.entries(WALLPAPERS).map(([key, wp]) => `
-            <div class="wp-swatch ${!s.wallpaper_url && curWp === key ? 'active' : ''}"
+            <div class="wp-img gradient ${!s.wallpaper_url && curWp === key ? 'active' : ''}"
                  data-act="set-wallpaper" data-wp="${key}"
                  style="background:${wp.css}" title="${wp.name}">
-              <span class="wp-swatch-name">${wp.name}</span>
+              <span class="wp-gradient-name">${wp.name}</span>
             </div>
           `).join('')}
         </div>
@@ -1587,6 +1619,25 @@ function renderSettingsView() {
     </div>
   </details>`;
 
+  // ── Embedded sections: Local music, History, Stats ──
+  // Local music (collapsed by default)
+  html += `<details class="settings-section">
+    <summary class="settings-section-title">本地音乐库</summary>
+    <div class="settings-group" id="settings-local-embed"></div>
+  </details>`;
+
+  // History (collapsed)
+  html += `<details class="settings-section">
+    <summary class="settings-section-title">播放历史</summary>
+    <div class="settings-group" id="settings-history-embed"></div>
+  </details>`;
+
+  // Stats (collapsed)
+  html += `<details class="settings-section">
+    <summary class="settings-section-title">听歌统计</summary>
+    <div class="settings-group" id="settings-stats-embed"></div>
+  </details>`;
+
   // About
   html += `<div class="settings-about">
     <div style="font-size:1.1rem;font-weight:600">落音 LoyinMusic</div>
@@ -1667,14 +1718,10 @@ function renderStatsView() {
 function render() {
   const vc = document.getElementById('view-container');
   switch (state.view) {
-    case 'local':    vc.innerHTML = renderLocalView(); break;
-    case 'online':   vc.innerHTML = renderOnlineView(); break;
-    case 'tags':     vc.innerHTML = renderTagsView(); break;
+    case 'online':    vc.innerHTML = renderOnlineView(); break;
     case 'playlists': vc.innerHTML = renderPlaylistsView(); break;
-    case 'history':   vc.innerHTML = renderHistoryView(); break;
-    case 'stats':     vc.innerHTML = renderStatsView(); break;
     case 'settings':  vc.innerHTML = renderSettingsView(); break;
-    default:          vc.innerHTML = renderLocalView();
+    default:          vc.innerHTML = renderOnlineView();
   }
   bindViewEvents();
 }
@@ -2299,11 +2346,47 @@ function bindViewEvents() {
     render();
   });
 
+  // ── Embedded sections in settings (local, history, stats) ──────
+  document.querySelectorAll('details.settings-section').forEach(det => {
+    det.addEventListener('toggle', async () => {
+      if (!det.open) return;
+      const localEl = det.querySelector('#settings-local-embed');
+      if (localEl && !localEl.dataset.loaded) {
+        localEl.dataset.loaded = '1';
+        localEl.innerHTML = renderLocalView();
+        bindViewEvents();  // rebind for the new content
+      }
+      const histEl = det.querySelector('#settings-history-embed');
+      if (histEl && !histEl.dataset.loaded) {
+        histEl.dataset.loaded = '1';
+        histEl.innerHTML = renderHistoryView();
+        bindViewEvents();
+      }
+      const statsEl = det.querySelector('#settings-stats-embed');
+      if (statsEl && !statsEl.dataset.loaded) {
+        statsEl.dataset.loaded = '1';
+        // Load stats data then render
+        try {
+          state._stats = await api.get('/stats');
+        } catch {}
+        statsEl.innerHTML = renderStatsView();
+        bindViewEvents();
+      }
+    });
+  });
+
   // ── Proxy toggle ──────────────────────────────────────────────
   document.getElementById('btn-toggle-proxy')?.addEventListener('click', async () => {
     const cur = state.settings.proxy_allow_outbound === 'true';
     await api.put('/settings', { proxy_allow_outbound: cur ? 'false' : 'true' });
     state.settings.proxy_allow_outbound = cur ? 'false' : 'true';
+    render();
+  });
+
+  // ── Back from tag drill-down ────────────────────────────────────
+  document.querySelector('[data-act="back-from-tag"]')?.addEventListener('click', () => {
+    state.activeTagId = null;
+    state.tagTracks = [];
     render();
   });
 
