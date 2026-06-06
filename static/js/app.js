@@ -691,23 +691,38 @@ const player = {
 };
 
 // ── Track table renderer (shared by local / online / tags) ────────
+const PAGE_SIZE = 100;
 function renderTrackTable(tracks, kindCol = false) {
   if (!tracks.length) return '';
-  let html = `<table class="track-table"><thead><tr>
+  const total = tracks.length;
+  const page = state._trackPage || 0;
+  const paged = total > PAGE_SIZE ? tracks.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE) : tracks;
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+  let html = '';
+  if (totalPages > 1) {
+    html += `<div class="pagination">
+      <button class="btn btn-ghost" ${page <= 0 ? 'disabled' : ''} data-act="page-prev">← 上一页</button>
+      <span class="page-info">${page + 1} / ${totalPages}（共 ${total} 首）</span>
+      <button class="btn btn-ghost" ${page >= totalPages - 1 ? 'disabled' : ''} data-act="page-next">下一页 →</button>
+    </div>`;
+  }
+  html += `<table class="track-table"><thead><tr>
     <th class="td-idx">#</th><th class="td-cover"></th>
     <th class="td-title">标题</th><th class="td-artist">艺人</th>
     <th class="td-album">专辑</th>
     ${kindCol ? '<th class="td-kind">来源</th>' : ''}
     <th class="td-duration">时长</th><th class="td-actions"></th>
   </tr></thead><tbody>`;
-  tracks.forEach((t, i) => {
+  const offset = page * PAGE_SIZE;
+  paged.forEach((t, i) => {
     const cv = coverUrl(t);
     const kind = t.kind || t.track_kind || 'local';
     const id = t.id || t.track_id;
     const cur = player.queue[player.current];
     const isPlaying = cur && cur.kind === kind && cur.id === id;
-    html += `<tr class="track-row ${isPlaying ? 'playing' : ''}" data-kind="${kind}" data-id="${id}" data-idx="${i}">
-      <td class="td-idx">${isPlaying ? '🔊' : i + 1}</td>
+    const num = offset + i;
+    html += `<tr class="track-row ${isPlaying ? 'playing' : ''}" data-kind="${kind}" data-id="${id}" data-idx="${num}">
+      <td class="td-idx">${isPlaying ? '🔊' : num + 1}</td>
       <td class="td-cover">${cv ? `<img src="${esc(cv)}" alt="" loading="lazy">` : '<div style="width:32px;height:32px;border-radius:4px;background:var(--bg-hover)"></div>'}</td>
       <td class="td-title"><span class="track-name">${esc(t.title || '')}</span></td>
       <td class="td-artist">${esc(t.artist || '')}</td>
@@ -717,6 +732,7 @@ function renderTrackTable(tracks, kindCol = false) {
       <td class="td-actions">
         <button class="btn-tag-action" data-act="add-to-playlist" data-kind="${kind}" data-id="${id}" title="加入歌单">➕</button>
         <button class="btn-tag-action" data-act="open-tagger" data-kind="${kind}" data-id="${id}" title="标签">🏷</button>
+        <button class="btn-tag-action" data-act="del-track" data-kind="${kind}" data-id="${id}" title="删除" style="opacity:0.4">✕</button>
       </td>
     </tr>`;
   });
@@ -763,8 +779,17 @@ function renderLocalView() {
         <button class="subtab ${sub==='artists'?'active':''}" data-act="local-sub" data-sub="artists">艺人</button>
       </div>
     </div>
-    <div class="search-box"><span class="search-icon">🔍</span>
-      <input type="search" id="search-input" placeholder="搜索标题 / 艺人 / 专辑..." value="${esc(state.searchQuery)}">
+    <div style="display:flex;gap:8px;align-items:center">
+      <select class="settings-select" data-act="set-sort" style="font-size:0.78rem;padding:3px 6px">
+        <option value="added_at:desc" ${(state._localSort||'added_at:desc')==='added_at:desc'?'selected':''}>最近添加</option>
+        <option value="title:asc" ${state._localSort==='title:asc'?'selected':''}>标题 A-Z</option>
+        <option value="artist:asc" ${state._localSort==='artist:asc'?'selected':''}>艺人 A-Z</option>
+        <option value="play_count:desc" ${state._localSort==='play_count:desc'?'selected':''}>最多播放</option>
+        <option value="duration_ms:desc" ${state._localSort==='duration_ms:desc'?'selected':''}>时长</option>
+      </select>
+      <div class="search-box"><span class="search-icon">🔍</span>
+        <input type="search" id="search-input" placeholder="搜索标题 / 艺人 / 专辑..." value="${esc(state.searchQuery)}">
+      </div>
     </div>
   </div>`;
 
@@ -880,9 +905,14 @@ function renderOnlineView() {
     html += '<div class="settings-section-title">我的收藏</div>';
   }
 
-  if (!filtered.length && !state.onlineSearchResults.length) {
+  if (!filtered.length && !state.onlineSearchResults.length && !state._searchLoading) {
+    const history = _getSearchHistory();
+    const historyHtml = history.length ? `<div style="margin-top:12px;display:flex;flex-wrap:wrap;gap:6px;justify-content:center">${history.map(h =>
+      `<button class="btn btn-ghost" data-act="search-history" data-q="${esc(h)}" style="font-size:0.78rem;padding:3px 10px">${esc(h)}</button>`
+    ).join('')}</div>` : '';
     html += `<div class="empty-state"><div class="empty-icon">🌐</div><div class="empty-text">
-      搜索框输入关键词即可搜索（内置 iTunes 试听）<br>装上洛雪音源脚本后可搜索完整曲库 · 也可「+ 外链」添加直链
+      搜索框输入关键词即可搜索（内置 5 大平台 + iTunes）<br>装上洛雪音源脚本后可在线播放完整曲目 · 也可「+ 外链」添加直链
+      ${historyHtml}
     </div></div>`;
   } else if (filtered.length) {
     html += renderTrackTable(filtered.map(t => ({ ...t, kind: 'online' })));
@@ -937,7 +967,8 @@ function renderTagsView() {
   const chip = t => {
     const active = state.activeTagId === t.id;
     const isSmart = t.kind === 'smart';
-    return `<div class="tag-chip ${active ? 'active' : ''} ${isSmart ? 'smart' : ''}" data-act="select-tag" data-tag-id="${t.id}">
+    const colorStyle = t.color ? `border-left:3px solid ${t.color};` : '';
+    return `<div class="tag-chip ${active ? 'active' : ''} ${isSmart ? 'smart' : ''}" data-act="select-tag" data-tag-id="${t.id}" style="${colorStyle}">
       <span>${isSmart ? '⚡ ' : ''}${esc(t.name)}</span>
       <span class="tag-remove" data-act="del-tag" data-id="${t.id}">&times;</span>
     </div>`;
@@ -982,6 +1013,7 @@ function renderPlaylistsView() {
       <span class="view-title" style="font-size:1.2rem">${esc(playlist.name)}</span>
       <span class="count">(${items.length})</span>
       ${items.length ? '<button class="btn btn-primary" id="btn-play-all">▶ 播放全部</button>' : ''}
+      ${items.length ? '<button class="btn btn-ghost" id="btn-export-playlist">导出</button>' : ''}
     </div>`;
     if (items.length) {
       // Render with drag handles for reorder
@@ -1290,6 +1322,22 @@ function renderSettingsView() {
         <div class="settings-row-label">默认音量</div>
         <span>${s.volume || 80}%</span>
       </div>
+      <div class="settings-row">
+        <div class="settings-row-label">显示歌词翻译</div>
+        <button class="btn btn-ghost" id="btn-toggle-tlyric">
+          ${s.lyric_show_translation !== 'false' ? '✓ 已开启' : '✗ 已关闭'}</button>
+      </div>
+      <div class="settings-row">
+        <div><div class="settings-row-label">睡眠定时</div>
+          <div class="settings-row-sub">到时间自动暂停播放</div></div>
+        <div style="display:flex;gap:4px">
+          ${['off','15','30','60','90'].map(m => `
+            <button class="btn ${(state._sleepMinutes||'off')===m ? 'btn-primary' : 'btn-ghost'}"
+                    data-act="set-sleep" data-m="${m}" style="padding:4px 10px;font-size:0.8rem">${m === 'off' ? '关' : m + '分'}</button>
+          `).join('')}
+        </div>
+      </div>
+      ${state._sleepAt ? `<div class="settings-row"><div class="settings-row-sub">将在 ${new Date(state._sleepAt).toLocaleTimeString('zh-CN',{hour:'2-digit',minute:'2-digit'})} 暂停</div></div>` : ''}
     </div>
   </details>`;
 
@@ -1309,8 +1357,35 @@ function renderSettingsView() {
           导入 <input type="file" accept=".json" id="import-file-input" style="display:none">
         </label>
       </div>
+      <div class="settings-row">
+        <div><div class="settings-row-label">清除播放历史</div>
+          <div class="settings-row-sub" style="color:var(--danger)">删除所有播放记录</div></div>
+        <button class="btn btn-ghost" style="color:var(--danger)" id="btn-clear-history">清除</button>
+      </div>
     </div>
   </details>`;
+
+  // Advanced
+  html += `<details class="settings-section">
+    <summary class="settings-section-title">高级</summary>
+    <div class="settings-group">
+      <div class="settings-row">
+        <div><div class="settings-row-label">允许音源网络请求</div>
+          <div class="settings-row-sub">音源脚本通过代理发送 HTTP 请求</div></div>
+        <button class="btn btn-ghost" id="btn-toggle-proxy">
+          ${s.proxy_allow_outbound === 'true' ? '✓ 已开启' : '✗ 已关闭'}</button>
+      </div>
+    </div>
+  </details>`;
+
+  // About
+  html += `<div class="settings-about">
+    <div style="font-size:1.1rem;font-weight:600">落音 LoyinMusic</div>
+    <div style="color:var(--text-tertiary);font-size:0.78rem;margin-top:4px">v1.0.0 · 与日迹 DayNote 同属一个系列</div>
+    <div style="color:var(--text-tertiary);font-size:0.72rem;margin-top:2px">
+      <a href="https://github.com/DongLingke/LoyinMusic" target="_blank" style="color:var(--accent);text-decoration:none">GitHub</a>
+    </div>
+  </div>`;
 
   return html;
 }
@@ -1332,6 +1407,26 @@ function render() {
 
 // ── Event binding ─────────────────────────────────────────────────
 function bindViewEvents() {
+  // Pagination
+  document.querySelector('[data-act="page-prev"]')?.addEventListener('click', () => {
+    state._trackPage = Math.max(0, (state._trackPage || 0) - 1);
+    render();
+    document.getElementById('view-container')?.scrollTo(0, 0);
+  });
+  document.querySelector('[data-act="page-next"]')?.addEventListener('click', () => {
+    state._trackPage = (state._trackPage || 0) + 1;
+    render();
+    document.getElementById('view-container')?.scrollTo(0, 0);
+  });
+
+  // Sort control
+  document.querySelector('[data-act="set-sort"]')?.addEventListener('change', async (e) => {
+    state._localSort = e.target.value;
+    const [sort, order] = e.target.value.split(':');
+    state.localTracks = await api.get(`/local/tracks?sort=${sort}&order=${order}`);
+    render();
+  });
+
   // Search (shared by local + online)
   const si = document.getElementById('search-input');
   if (si) {
@@ -1387,7 +1482,9 @@ function bindViewEvents() {
   document.getElementById('btn-add-tag')?.addEventListener('click', async () => {
     const name = prompt('标签名称');
     if (!name?.trim()) return;
-    await api.post('/tags', { name: name.trim() });
+    const TAG_COLORS = ['#007AFF','#30A84E','#FF6B35','#9B7BC9','#E8829A','#C77F2D','#56A0C7','#C0392B'];
+    const color = TAG_COLORS[state.tags.length % TAG_COLORS.length];
+    await api.post('/tags', { name: name.trim(), color });
     state.tags = await api.get('/tags');
     render();
   });
@@ -1488,6 +1585,20 @@ function bindViewEvents() {
     };
   });
 
+  // ── Track delete ───────────────────────────────────────────────
+  document.querySelectorAll('[data-act="del-track"]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const kind = btn.dataset.kind, id = parseInt(btn.dataset.id, 10);
+      if (!confirm(`确定删除这首${kind === 'local' ? '本地' : '在线'}曲目？`)) return;
+      await api.del(`/${kind === 'local' ? 'local' : 'online'}/tracks/${id}`);
+      if (kind === 'local') state.localTracks = await api.get('/local/tracks');
+      else state.onlineTracks = await api.get('/online/tracks');
+      showToast('已删除');
+      render();
+    };
+  });
+
   // ── Inline tagger (open/close/toggle) ─────────────────────────
   document.querySelectorAll('[data-act="open-tagger"]').forEach(btn => {
     btn.onclick = async (e) => {
@@ -1544,6 +1655,16 @@ function bindViewEvents() {
     state.onlineSearchResults = [];
     state._searchAllSources = [];
     render();
+  });
+
+  // Search history quick chips
+  document.querySelectorAll('[data-act="search-history"]').forEach(btn => {
+    btn.onclick = () => {
+      state.searchQuery = btn.dataset.q;
+      const si = document.getElementById('search-input');
+      if (si) si.value = btn.dataset.q;
+      doOnlineSearch();
+    };
   });
 
   // Platform filter tabs
@@ -1671,7 +1792,7 @@ function bindViewEvents() {
       const r = await api.post('/sources', { url: url.trim() });
       if (r.error) { showToast('导入失败: ' + r.error, 'error'); return; }
       state.sources = await api.get('/sources');
-      try { await window.sourceHost.loadAll(); } catch {}
+      try { await window.sourceHost.loadAll(); state.sources = await api.get('/sources'); } catch {}
       showToast('音源安装成功');
       render();
     } catch (e) { showToast('导入失败: ' + e.message, 'error'); }
@@ -1684,7 +1805,7 @@ function bindViewEvents() {
     await api.upload('/sources', file);
     state.sources = await api.get('/sources');
     // Re-init sandbox
-    try { await window.sourceHost.loadAll(); } catch {}
+    try { await window.sourceHost.loadAll(); state.sources = await api.get('/sources'); } catch {}
     render();
   });
 
@@ -1693,7 +1814,7 @@ function bindViewEvents() {
       const enabled = btn.dataset.enabled === '1' ? 0 : 1;
       await api.put(`/sources/${btn.dataset.id}`, { enabled });
       state.sources = await api.get('/sources');
-      try { await window.sourceHost.loadAll(); } catch {}
+      try { await window.sourceHost.loadAll(); state.sources = await api.get('/sources'); } catch {}
       render();
     };
   });
@@ -1834,6 +1955,56 @@ function bindViewEvents() {
     }
   });
 
+  // ── Lyric translation toggle ──────────────────────────────────
+  document.getElementById('btn-toggle-tlyric')?.addEventListener('click', async () => {
+    const cur = state.settings.lyric_show_translation !== 'false';
+    await api.put('/settings', { lyric_show_translation: cur ? 'false' : 'true' });
+    state.settings.lyric_show_translation = cur ? 'false' : 'true';
+    render();
+  });
+
+  // ── Sleep timer ───────────────────────────────────────────────
+  document.querySelectorAll('[data-act="set-sleep"]').forEach(btn => {
+    btn.onclick = () => {
+      const m = btn.dataset.m;
+      clearTimeout(state._sleepTimer);
+      if (m === 'off') {
+        state._sleepMinutes = 'off';
+        state._sleepAt = null;
+      } else {
+        const ms = parseInt(m) * 60 * 1000;
+        state._sleepMinutes = m;
+        state._sleepAt = Date.now() + ms;
+        state._sleepTimer = setTimeout(() => {
+          player.audio.pause();
+          state._sleepMinutes = 'off';
+          state._sleepAt = null;
+          showToast('睡眠定时到，已暂停播放');
+          if (state.view === 'settings') render();
+        }, ms);
+      }
+      render();
+    };
+  });
+
+  // ── Clear history ─────────────────────────────────────────────
+  document.getElementById('btn-clear-history')?.addEventListener('click', async () => {
+    if (!confirm('确定清除所有播放历史？此操作不可撤销。')) return;
+    await api.del('/history');
+    state.historyTracks = [];
+    state.historyDaysWithPlays = new Set();
+    showToast('播放历史已清除');
+    render();
+  });
+
+  // ── Proxy toggle ──────────────────────────────────────────────
+  document.getElementById('btn-toggle-proxy')?.addEventListener('click', async () => {
+    const cur = state.settings.proxy_allow_outbound === 'true';
+    await api.put('/settings', { proxy_allow_outbound: cur ? 'false' : 'true' });
+    state.settings.proxy_allow_outbound = cur ? 'false' : 'true';
+    render();
+  });
+
   // ── M8: Playlists ──────────────────────────────────────────────
   document.getElementById('btn-add-playlist')?.addEventListener('click', async () => {
     const name = prompt('歌单名称');
@@ -1853,6 +2024,22 @@ function bindViewEvents() {
     if (!items.length) return;
     const queue = items.map(it => ({ ...it, kind: it.track_kind, id: it.track_id }));
     player.playTrack(queue[0], queue, 0);
+  });
+
+  document.getElementById('btn-export-playlist')?.addEventListener('click', () => {
+    const { playlist, items } = state.activePlaylist || {};
+    if (!items?.length) return;
+    const m3u = '#EXTM3U\n' + items.map(it => {
+      const dur = Math.round((it.duration_ms || 0) / 1000);
+      return `#EXTINF:${dur},${it.artist || ''} - ${it.title || ''}\n${it.track_kind === 'local' ? `/api/local/stream/${it.track_id}` : (it.url_cache || it.cover_url || '#')}`;
+    }).join('\n');
+    const blob = new Blob([m3u], { type: 'audio/x-mpegurl' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${playlist.name || 'playlist'}.m3u`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    showToast('歌单已导出为 m3u');
   });
 
   document.querySelectorAll('[data-act="open-playlist"]').forEach(el => {
@@ -1999,11 +2186,22 @@ async function loadHistoryMonth() {
 }
 
 // ── Now-playing overlay ──────────────────────────────────────────
+// ── Search history (localStorage) ────────────────────────────────
+function _getSearchHistory() {
+  try { return JSON.parse(localStorage.getItem('loyin_search_history') || '[]').slice(0, 8); } catch { return []; }
+}
+function _addSearchHistory(q) {
+  const h = _getSearchHistory().filter(x => x !== q);
+  h.unshift(q);
+  try { localStorage.setItem('loyin_search_history', JSON.stringify(h.slice(0, 8))); } catch {}
+}
+
 // ── Online search: backend-driven (iTunes + platform adapters) ───
 let _searchAbort = null;
 async function doOnlineSearch() {
   const q = state.searchQuery.trim();
   if (!q) return;
+  _addSearchHistory(q);
 
   // Show loading state
   state.onlineSearchResults = [];

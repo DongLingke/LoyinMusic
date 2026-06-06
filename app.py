@@ -43,6 +43,44 @@ app.config['TEMPLATES_AUTO_RELOAD'] = True
 app.jinja_env.auto_reload = True
 
 # ---------------------------------------------------------------------------
+# Optional authentication (set LOYIN_TOKEN env var to enable)
+# ---------------------------------------------------------------------------
+_AUTH_TOKEN = os.environ.get('LOYIN_TOKEN', '')
+
+
+@app.before_request
+def check_auth():
+    """When LOYIN_TOKEN is set, every request must carry it as a cookie or
+    query param `token=...`.  The index page sets a cookie on first visit
+    with ?token=xxx so subsequent requests are transparent."""
+    if not _AUTH_TOKEN:
+        return  # auth disabled
+    # Static assets and the login page are always allowed
+    if request.path.startswith('/static/'):
+        return
+    token = request.cookies.get('loyin_token') or request.args.get('token', '')
+    if token == _AUTH_TOKEN:
+        return
+    # If HTML request (browser), show a simple login form
+    if 'text/html' in (request.headers.get('Accept', '')):
+        if request.method == 'GET' and request.path == '/':
+            return render_template('login.html') if os.path.exists(str(BASE / 'templates' / 'login.html')) else (
+                '<form method=GET style="font-family:sans-serif;max-width:300px;margin:80px auto;text-align:center">'
+                '<h2>落音 LoyinMusic</h2><input name=token placeholder="输入访问密码" style="padding:8px;width:100%;box-sizing:border-box;border:1px solid #ccc;border-radius:6px">'
+                '<button style="margin-top:8px;padding:8px 24px;border:none;background:#007AFF;color:#fff;border-radius:6px;cursor:pointer">进入</button></form>'
+            )
+        return abort(401)
+    return jsonify({'error': 'unauthorized'}), 401
+
+
+@app.after_request
+def set_token_cookie(resp):
+    """If the user just authenticated with ?token=, set a persistent cookie."""
+    if _AUTH_TOKEN and request.args.get('token') == _AUTH_TOKEN:
+        resp.set_cookie('loyin_token', _AUTH_TOKEN, max_age=365*24*3600, httponly=True, samesite='Lax')
+    return resp
+
+# ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
 def get_db():
@@ -722,6 +760,17 @@ def get_history():
         ''', (limit,)).fetchall()
     conn.close()
     return jsonify([dict(r) for r in rows])
+
+
+@app.route('/api/history', methods=['DELETE'])
+def clear_history():
+    conn = get_db()
+    conn.execute('DELETE FROM play_history')
+    conn.execute("UPDATE local_tracks SET play_count=0, last_played=NULL")
+    conn.execute("UPDATE online_tracks SET play_count=0, last_played=NULL")
+    conn.commit()
+    conn.close()
+    return jsonify({'ok': True})
 
 
 @app.route('/api/history', methods=['POST'])

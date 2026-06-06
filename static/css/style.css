@@ -1053,6 +1053,25 @@ details.settings-section[open] > summary::before { transform: rotate(90deg); }
 }
 .reset-btn:hover { opacity: 1; }
 
+/* ── Pagination ──────────────────────────────────────────────── */
+.pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 8px 0;
+  font-size: 0.8rem;
+}
+.page-info { color: var(--text-secondary); }
+.pagination .btn:disabled { opacity: 0.3; cursor: default; }
+
+/* ── Settings about ─────────────────────────────────────────── */
+.settings-about {
+  text-align: center;
+  padding: 24px 16px 12px;
+  color: var(--text-secondary);
+}
+
 /* ── Source badge in search results ──────────────────────────── */
 .kind-badge.online {
   font-size: 0.65rem;
