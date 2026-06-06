@@ -424,6 +424,28 @@ const player = {
     this._load(track);
   },
 
+  /** Insert a track right after the current position in the queue. */
+  playNext(track) {
+    if (!this.queue.length) {
+      // Nothing playing — just start it
+      this.playTrack(track, [track], 0);
+      return;
+    }
+    // Remove duplicate if already in queue
+    const dup = this.queue.findIndex(t => t.kind === track.kind && t.id === track.id);
+    if (dup >= 0) {
+      this.queue.splice(dup, 1);
+      if (dup < this.current) this.current--;
+      else if (dup === this.current) { this.current = Math.min(this.current, this.queue.length - 1); }
+    }
+    // Insert right after current
+    this.queue.splice(this.current + 1, 0, track);
+    this._saveLast();
+    const qp = document.getElementById('queue-panel');
+    if (qp && !qp.classList.contains('hidden')) this._renderQueue();
+    showToast(`"${track.title}" 将在下一首播放`);
+  },
+
   async _load(track) {
     let url;
     if (track.kind === 'local') {
@@ -855,6 +877,7 @@ function renderTrackTable(tracks, kindCol = false) {
       ${kindCol ? `<td class="td-kind">${kindBadge(kind)}</td>` : ''}
       <td class="td-duration">${fmtTime(t.duration_ms)}</td>
       <td class="td-actions">
+        <button class="btn-tag-action" data-act="play-next" data-kind="${kind}" data-id="${id}" title="下一首播放">⏭</button>
         <button class="btn-tag-action" data-act="add-to-playlist" data-kind="${kind}" data-id="${id}" title="加入歌单">➕</button>
         <button class="btn-tag-action" data-act="open-tagger" data-kind="${kind}" data-id="${id}" title="标签">🏷</button>
         <button class="btn-tag-action" data-act="del-track" data-kind="${kind}" data-id="${id}" title="删除" style="opacity:0.4">✕</button>
@@ -1795,6 +1818,17 @@ function bindViewEvents() {
       await api.post(`/playlists/${state.playlists[idx].id}/items`, { track_kind: kind, track_id: id });
       state.playlists = await api.get('/playlists');
       btn.textContent = '✓';
+    };
+  });
+
+  // ── Play next ─────────────────────────────────────────────────
+  document.querySelectorAll('[data-act="play-next"]').forEach(btn => {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const kind = btn.dataset.kind, id = parseInt(btn.dataset.id, 10);
+      const pool = kind === 'local' ? state.localTracks : state.onlineTracks;
+      const track = pool.find(t => t.id === id);
+      if (track) player.playNext({ ...track, kind, id });
     };
   });
 
