@@ -1127,7 +1127,7 @@ function renderOnlineView() {
     // Platform filter tabs
     const allSrcs = state._searchAllSources || [];
     const curFilter = state._searchSourceFilter || 'all';
-    const PLATFORM_NAMES = { itunes:'iTunes', kw:'酷我', wy:'网易云', tx:'QQ音乐', kg:'酷狗', mg:'咪咕' };
+    const PLATFORM_NAMES = { kw:'酷我', wy:'网易云', tx:'QQ音乐', kg:'酷狗', mg:'咪咕' };
     html += `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap">
       <div class="settings-section-title" style="margin:0;flex-shrink:0">搜索结果</div>
       <div class="subtab-row" style="flex-wrap:wrap">
@@ -1151,7 +1151,7 @@ function renderOnlineView() {
       `<button class="btn btn-ghost" data-act="search-history" data-q="${esc(h)}" style="font-size:0.78rem;padding:3px 10px">${esc(h)}</button>`
     ).join('')}</div>` : '';
     html += `<div class="empty-state"><div class="empty-icon">🌐</div><div class="empty-text">
-      搜索框输入关键词即可搜索（内置 5 大平台 + iTunes）<br>装上洛雪音源脚本后可在线播放完整曲目 · 也可「+ 外链」添加直链
+      搜索框输入关键词搜索（酷我/网易云/QQ音乐/酷狗/咪咕）<br>装上洛雪音源脚本后可在线播放 · 也可「+ 外链」添加直链
       ${historyHtml}
     </div></div>`;
   } else if (filtered.length) {
@@ -2096,7 +2096,7 @@ function bindViewEvents() {
         source: t.source, source_id: t.source_id, title: t.title, artist: t.artist,
         album: t.album, duration_ms: t.duration_ms, cover_url: t.cover_url,
         url: t.url_cache || '', source_meta: t.source_meta,
-        default_quality: t.source !== 'itunes' ? '320k' : undefined,
+        default_quality: '320k',
       });
       state.onlineTracks = await api.get('/online/tracks');
       btn.textContent = '✓';
@@ -2670,7 +2670,7 @@ async function doOnlineSearch() {
   // Build sources list: always iTunes + any installed LX source platforms
   const avail = window.sourceHost ? window.sourceHost.getAvailableSources() : {};
   const platformKeys = Object.keys(avail).filter(k => k !== 'local');
-  const sources = ['itunes', ...platformKeys].join(',');
+  const sources = platformKeys.length ? platformKeys.join(',') : 'kw,wy,tx,kg,mg';
 
   try {
     const data = await api.get(`/online/search?q=${encodeURIComponent(q)}&sources=${sources}`);
@@ -2691,11 +2691,7 @@ async function doOnlineSearch() {
         if (!existing._platforms.includes(r.source)) {
           existing._platforms.push(r.source);
         }
-        // Prefer non-iTunes (has full track) and non-empty cover
-        if (r.source !== 'itunes' && existing.source === 'itunes') {
-          // Swap: use platform result as primary
-          Object.assign(existing, r, { _platforms: existing._platforms });
-        }
+        // Prefer the one with a cover
         if (!existing.cover_url && r.cover_url) existing.cover_url = r.cover_url;
       }
     }

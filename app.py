@@ -1140,7 +1140,7 @@ def online_search():
     if not keyword:
         return jsonify([])
 
-    sources_param = request.args.get('sources', 'itunes')
+    sources_param = request.args.get('sources', 'kw,wy,tx,kg,mg')
     source_list = [s.strip() for s in sources_param.split(',') if s.strip()]
 
     def _do_itunes():
