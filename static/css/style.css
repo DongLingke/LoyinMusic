@@ -315,34 +315,112 @@ input, textarea { font-family: inherit; }
 .card-header {
   display: flex;
   align-items: center;
-  justify-content: center;
   padding: 12px 16px 8px;
   flex-shrink: 0;
+  gap: 10px;
+  min-height: 36px;
 }
 
-.header-nav {
-  display: flex;
-  gap: 4px;
-  background: var(--item-glass);
-  border-radius: var(--radius-btn);
-  padding: 3px;
+.header-home-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text-primary);
+  flex: 1;
 }
-
-.nav-btn {
+.header-back-btn {
+  font-size: 1.1rem;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
-  gap: 5px;
-  padding: 6px 13px;
-  border-radius: calc(var(--radius-btn) - 2px);
-  font-size: 0.82rem;
-  font-weight: 500;
-  transition: background 0.15s, color 0.15s;
-  color: var(--text-secondary);
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--item-glass);
+  color: var(--text-primary);
+  transition: background 0.15s;
+  flex-shrink: 0;
 }
-.nav-btn:hover { background: var(--item-glass-hover); color: var(--text-primary); }
-.nav-btn.active { background: var(--accent); color: #fff; }
-.nav-ico { font-size: 0.95rem; line-height: 1; }
-.nav-txt { line-height: 1; }
+.header-back-btn:hover { background: var(--item-glass-hover); }
+.header-view-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-primary);
+  flex: 1;
+}
+
+/* ── Home view ─────────────────────────────────────────────────── */
+.home-now-playing {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  border-radius: var(--radius-item);
+  background: var(--item-glass);
+  border: 1px solid var(--item-border);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.home-now-playing:hover { background: var(--item-glass-hover); }
+.home-np-cover {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+.home-np-ph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-hover, rgba(255,255,255,0.06));
+  font-size: 1.4rem;
+}
+.home-np-info { flex: 1; min-width: 0; }
+.home-np-title {
+  font-size: 0.92rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home-np-artist {
+  font-size: 0.75rem;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.home-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 12px;
+  margin-bottom: 20px;
+}
+.home-card {
+  padding: 20px 16px;
+  border-radius: var(--radius-item);
+  background: var(--item-glass);
+  border: 1px solid var(--item-border);
+  cursor: pointer;
+  transition: background 0.15s, transform 0.12s;
+  text-align: center;
+}
+.home-card:hover { background: var(--item-glass-hover); transform: scale(1.02); }
+.home-card:active { transform: scale(0.98); }
+.home-card-icon { font-size: 2rem; margin-bottom: 8px; }
+.home-card-title { font-size: 0.95rem; font-weight: 600; margin-bottom: 3px; }
+.home-card-sub { font-size: 0.7rem; color: var(--text-tertiary); }
+
+.home-footer {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  font-size: 0.72rem;
+  color: var(--text-tertiary);
+  padding-top: 8px;
+}
 
 /* ── Wallpaper swatches (settings) ─────────────────────────────── */
 .wp-grid {
@@ -906,10 +984,9 @@ input, textarea { font-family: inherit; }
   }
   .glass-layer { border-radius: 0; }
 
-  .header-nav { justify-content: center; }
-  .nav-btn { padding: 7px 11px; }
-  .nav-txt { display: none; }
-  .nav-ico { font-size: 1.05rem; }
+  .home-grid { grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .home-card { padding: 14px 10px; }
+  .home-card-icon { font-size: 1.5rem; margin-bottom: 5px; }
 
   #view-container { padding: 10px 14px 8px; }
   .view-header { flex-direction: column; align-items: stretch; gap: 8px; }

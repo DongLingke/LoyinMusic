@@ -33,7 +33,7 @@ const api = {
 
 // ── State ─────────────────────────────────────────────────────────
 const state = {
-  view: 'online',
+  view: 'home',
   localTracks: [],
   onlineTracks: [],
   tags: [],
@@ -1044,6 +1044,52 @@ function emptyLocal(noData = true) {
   </div></div>`;
 }
 
+// ── Home view (menu grid) ─────────────────────────────────────────
+function renderHomeView() {
+  const track = player._currentTrack;
+  let html = '';
+
+  // Now-playing card (if something is playing)
+  if (track) {
+    const cv = coverUrl(track);
+    html += `<div class="home-now-playing" id="home-np-click">
+      ${cv ? `<img src="${esc(cv)}" class="home-np-cover" alt="">` : '<div class="home-np-cover home-np-ph">🎵</div>'}
+      <div class="home-np-info">
+        <div class="home-np-title">${esc(track.title || '未知曲目')}</div>
+        <div class="home-np-artist">${esc(track.artist || '')}</div>
+      </div>
+    </div>`;
+  }
+
+  // Menu grid
+  html += `<div class="home-grid">
+    <div class="home-card" data-goto="online">
+      <div class="home-card-icon">🌐</div>
+      <div class="home-card-title">在线音乐</div>
+      <div class="home-card-sub">搜索 · 5大平台</div>
+    </div>
+    <div class="home-card" data-goto="playlists">
+      <div class="home-card-icon">📋</div>
+      <div class="home-card-title">歌单</div>
+      <div class="home-card-sub">${state.playlists.length} 个歌单 · ${state.tags.length} 个标签</div>
+    </div>
+    <div class="home-card" data-goto="settings">
+      <div class="home-card-icon">⚙</div>
+      <div class="home-card-title">设置</div>
+      <div class="home-card-sub">外观 · 音源 · 本地</div>
+    </div>
+  </div>`;
+
+  // Quick stats
+  html += `<div class="home-footer">
+    <span>本地 ${state.localTracks.length} 首</span>
+    <span>·</span>
+    <span>收藏 ${state.onlineTracks.length} 首</span>
+  </div>`;
+
+  return html;
+}
+
 // ── M3: Online view ───────────────────────────────────────────────
 function renderOnlineView() {
   const tracks = state.onlineTracks;
@@ -1716,14 +1762,17 @@ function renderStatsView() {
 
 // ── Render engine ─────────────────────────────────────────────────
 function render() {
+  _renderHeader();
   const vc = document.getElementById('view-container');
   switch (state.view) {
+    case 'home':      vc.innerHTML = renderHomeView(); break;
     case 'online':    vc.innerHTML = renderOnlineView(); break;
     case 'playlists': vc.innerHTML = renderPlaylistsView(); break;
     case 'settings':  vc.innerHTML = renderSettingsView(); break;
-    default:          vc.innerHTML = renderOnlineView();
+    default:          vc.innerHTML = renderHomeView();
   }
   bindViewEvents();
+  bindNav();
 }
 
 // ── Event binding ─────────────────────────────────────────────────
@@ -2692,18 +2741,41 @@ function bindNowPlaying() {
   });
 }
 
+const VIEW_TITLES = {
+  home: '落音', online: '在线音乐', playlists: '歌单', settings: '设置',
+};
+
+function _renderHeader() {
+  const header = document.getElementById('card-header');
+  if (!header) return;
+  if (state.view === 'home') {
+    header.innerHTML = `<div class="header-home-title">落音 <span style="font-size:0.65em;opacity:0.5">LoyinMusic</span></div>`;
+  } else {
+    header.innerHTML = `
+      <button class="header-back-btn" id="btn-go-home">←</button>
+      <div class="header-view-title">${VIEW_TITLES[state.view] || ''}</div>`;
+    document.getElementById('btn-go-home').onclick = () => navigateTo('home');
+  }
+}
+
+function navigateTo(view) {
+  state.view = view;
+  state.searchQuery = '';
+  state._trackPage = 0;
+  state._searchNoResults = false;
+  if (view === 'stats') state._stats = null;
+  render();
+}
+
 function bindNav() {
-  document.querySelectorAll('.nav-btn[data-view]').forEach(btn => {
-    btn.onclick = () => {
-      state.view = btn.dataset.view;
-      state.searchQuery = '';
-      state._trackPage = 0;
-      state._searchNoResults = false;
-      if (btn.dataset.view === 'stats') state._stats = null;  // refresh stats
-      document.querySelectorAll('.nav-btn[data-view]').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      render();
-    };
+  // Home view card clicks
+  document.querySelectorAll('[data-goto]').forEach(el => {
+    el.onclick = () => navigateTo(el.dataset.goto);
+  });
+  // Now-playing card on home → open overlay
+  document.getElementById('home-np-click')?.addEventListener('click', () => {
+    if (player._currentTrack)
+      document.getElementById('now-playing-overlay').classList.remove('hidden');
   });
 }
 
