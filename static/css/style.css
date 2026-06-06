@@ -907,9 +907,21 @@ input, textarea { font-family: inherit; }
   .view-header { flex-direction: column; align-items: stretch; gap: 8px; }
   .search-box { flex: 1; }
 
-  .player-progress-wrap { display: none; }
+  /* Show compact progress bar on mobile, hide volume (use hardware buttons) */
+  #player-bar {
+    flex-wrap: wrap;
+    padding: 6px 10px 4px;
+    gap: 2px;
+  }
+  .player-progress-wrap {
+    order: 10;
+    width: 100%;
+    padding: 0;
+    gap: 6px;
+  }
   .player-extra { display: none; }
-  .player-track-info { flex: 1; }
+  .player-track-info { flex: 1; min-width: 0; }
+  .player-controls { gap: 2px; }
 
   .td-album, .track-table th:nth-child(5) { display: none; }
 
@@ -944,6 +956,43 @@ input, textarea { font-family: inherit; }
 .toast.error { background: rgba(180,40,30,0.92); }
 @keyframes toast-in { from { opacity:0; transform:translateY(-12px); } to { opacity:1; transform:translateY(0); } }
 @keyframes toast-out { to { opacity:0; transform:translateY(-12px); } }
+
+/* ── Context menu ────────────────────────────────────────────── */
+.ctx-menu {
+  position: fixed;
+  z-index: 9000;
+  min-width: 160px;
+  padding: 6px 0;
+  border-radius: 10px;
+  background: rgba(30,30,42,0.92);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255,255,255,0.12);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.35);
+  animation: ctx-in 0.15s ease;
+}
+@keyframes ctx-in { from { opacity:0; transform:scale(0.95); } }
+.ctx-item {
+  padding: 8px 16px;
+  font-size: 0.82rem;
+  color: rgba(255,255,255,0.88);
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.ctx-item:hover { background: rgba(255,255,255,0.1); }
+.ctx-item.danger { color: var(--danger); }
+.ctx-divider { height: 1px; margin: 4px 8px; background: rgba(255,255,255,0.08); }
+
+/* ── Queue source badge ─────────────────────────────────────── */
+.queue-src {
+  font-size: 0.6rem;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(255,255,255,0.1);
+  color: var(--text-tertiary);
+  margin-left: 4px;
+  vertical-align: middle;
+}
 
 /* ── Search loading spinner ──────────────────────────────────── */
 .search-loading {
@@ -980,6 +1029,22 @@ input, textarea { font-family: inherit; }
 .track-row.drag-over {
   border-top: 2px solid var(--accent) !important;
 }
+
+/* ── Collapsible settings sections ────────────────────────────── */
+details.settings-section > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+details.settings-section > summary::-webkit-details-marker { display: none; }
+details.settings-section > summary::before {
+  content: '▸';
+  display: inline-block;
+  margin-right: 6px;
+  transition: transform 0.2s;
+  font-size: 0.75em;
+}
+details.settings-section[open] > summary::before { transform: rotate(90deg); }
 
 /* ── Reset buttons ───────────────────────────────────────────── */
 .reset-btn {

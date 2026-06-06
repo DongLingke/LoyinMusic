@@ -377,7 +377,7 @@ const player = {
       <div class="queue-item ${i === this.current ? 'current' : ''}" data-qi="${i}">
         <span class="queue-item-idx">${i === this.current ? '🔊' : i + 1}</span>
         <div class="queue-item-meta">
-          <div class="queue-item-title">${esc(t.title || '未知')}</div>
+          <div class="queue-item-title">${esc(t.title || '未知')}${t.kind === 'online' && t.source && t.source !== 'url' ? ` <span class="queue-src">${t.source}</span>` : ''}</div>
           <div class="queue-item-artist">${esc(t.artist || '')}</div>
         </div>
         <button class="queue-item-rm" data-qrm="${i}" title="移除">✕</button>
@@ -421,11 +421,17 @@ const player = {
       if (!url && track.source && track.source !== 'url' && track.source !== 'itunes') {
         try {
           url = await this._resolveOnlineUrl(track);
-        } catch { /* fall through */ }
+        } catch (e) {
+          showToast(`解析失败: ${e.message || '未知错误'}`, 'error');
+        }
       }
       if (!url) url = track.url_cache || track.path || '';
     }
-    if (!url) return;
+    if (!url) {
+      showToast('无法获取播放链接', 'error');
+      this.next();
+      return;
+    }
     this.audio.src = url;
     this.audio.play();
     this._startTime = Date.now();
@@ -1097,8 +1103,8 @@ function renderSettingsView() {
 
   // Appearance
   const curWp = s.wallpaper || 'aurora';
-  html += `<div class="settings-section">
-    <div class="settings-section-title">外观 <button class="btn btn-ghost reset-btn" data-act="reset-section" data-section="appearance" style="font-size:0.7rem;padding:2px 8px;margin-left:8px">恢复默认</button></div>
+  html += `<details class="settings-section" open>
+    <summary class="settings-section-title">外观 <button class="btn btn-ghost reset-btn" data-act="reset-section" data-section="appearance" style="font-size:0.7rem;padding:2px 8px;margin-left:8px">恢复默认</button></summary>
     <div class="settings-group">
       <div class="settings-row" style="flex-direction:column;align-items:stretch;gap:10px">
         <div class="settings-row-label">壁纸图片</div>
@@ -1162,7 +1168,7 @@ function renderSettingsView() {
         </div>
       </div>
     </div>
-  </div>`;
+  </details>`;
 
   // Card adjustments (ported from Daynote)
   const cg = k => s[k] || CARD_DEFAULTS[k];
@@ -1172,8 +1178,8 @@ function renderSettingsView() {
       <input type="range" class="settings-slider" min="${min}" max="${max}" value="${cg(k)}" data-act="set-slider" data-k="${k}">
       <span class="settings-slider-val" data-valfor="${k}">${disp ? disp(cg(k)) : cg(k) + (unit||'')}</span>
     </div>`;
-  html += `<div class="settings-section">
-    <div class="settings-section-title">卡片 <button class="btn btn-ghost reset-btn" data-act="reset-section" data-section="card" style="font-size:0.7rem;padding:2px 8px;margin-left:8px">恢复默认</button></div>
+  html += `<details class="settings-section" open>
+    <summary class="settings-section-title">卡片 <button class="btn btn-ghost reset-btn" data-act="reset-section" data-section="card" style="font-size:0.7rem;padding:2px 8px;margin-left:8px">恢复默认</button></summary>
     <div class="settings-group">
       ${slider('card_size', '尺寸', 50, 100, '%')}
       ${slider('card_opacity', '不透明度', 40, 100, '%')}
@@ -1184,11 +1190,11 @@ function renderSettingsView() {
       ${slider('card_item_tint', '局部底纹', 0, 100, '%')}
       ${slider('card_aspect', '宽高比', 100, 220, '', v => (parseFloat(v)/100).toFixed(2))}
     </div>
-  </div>`;
+  </details>`;
 
   // Fonts (ported from Daynote)
-  html += `<div class="settings-section">
-    <div class="settings-section-title">字体 <button class="btn btn-ghost reset-btn" data-act="reset-section" data-section="font" style="font-size:0.7rem;padding:2px 8px;margin-left:8px">恢复默认</button></div>
+  html += `<details class="settings-section" open>
+    <summary class="settings-section-title">字体 <button class="btn btn-ghost reset-btn" data-act="reset-section" data-section="font" style="font-size:0.7rem;padding:2px 8px;margin-left:8px">恢复默认</button></summary>
     <div class="settings-group">
       <div class="settings-row">
         <div class="settings-row-label">字体</div>
@@ -1206,11 +1212,11 @@ function renderSettingsView() {
         </div>
       </div>
     </div>
-  </div>`;
+  </details>`;
 
   // Local music
-  html += `<div class="settings-section">
-    <div class="settings-section-title">本地音乐</div>
+  html += `<details class="settings-section" open>
+    <summary class="settings-section-title">本地音乐</summary>
     <div class="settings-group">
       <div class="settings-row">
         <div><div class="settings-row-label">扫描目录</div>
@@ -1232,11 +1238,11 @@ function renderSettingsView() {
           ${s.auto_scan_on_start === 'true' ? '✓ 已开启' : '✗ 已关闭'}</button>
       </div>
     </div>
-  </div>`;
+  </details>`;
 
   // M4: Source management
-  html += `<div class="settings-section">
-    <div class="settings-section-title">音源管理</div>
+  html += `<details class="settings-section" open>
+    <summary class="settings-section-title">音源管理</summary>
     <div class="settings-group">
       <div class="settings-row">
         <div><div class="settings-row-label">安装音源脚本</div>
@@ -1265,11 +1271,11 @@ function renderSettingsView() {
       </div>`;
     });
   }
-  html += `</div></div>`;
+  html += `</div></details>`;
 
   // Playback
-  html += `<div class="settings-section">
-    <div class="settings-section-title">播放 <button class="btn btn-ghost reset-btn" data-act="reset-section" data-section="playback" style="font-size:0.7rem;padding:2px 8px;margin-left:8px">恢复默认</button></div>
+  html += `<details class="settings-section" open>
+    <summary class="settings-section-title">播放 <button class="btn btn-ghost reset-btn" data-act="reset-section" data-section="playback" style="font-size:0.7rem;padding:2px 8px;margin-left:8px">恢复默认</button></summary>
     <div class="settings-group">
       <div class="settings-row">
         <div class="settings-row-label">默认在线音质</div>
@@ -1285,11 +1291,11 @@ function renderSettingsView() {
         <span>${s.volume || 80}%</span>
       </div>
     </div>
-  </div>`;
+  </details>`;
 
   // M9: Export / Import
-  html += `<div class="settings-section">
-    <div class="settings-section-title">数据备份</div>
+  html += `<details class="settings-section" open>
+    <summary class="settings-section-title">数据备份</summary>
     <div class="settings-group">
       <div class="settings-row">
         <div><div class="settings-row-label">导出全部数据</div>
@@ -1304,7 +1310,7 @@ function renderSettingsView() {
         </label>
       </div>
     </div>
-  </div>`;
+  </details>`;
 
   return html;
 }
@@ -1367,6 +1373,14 @@ function bindViewEvents() {
       const queue = state.onlineSearchResults.map((t, i) => ({ ...t, kind: 'online', id: t.id || `search-${i}` }));
       if (queue[idx]) player.playTrack(queue[idx], queue, idx);
     };
+  });
+
+  // ── Right-click context menu ────────────────────────────────
+  document.querySelectorAll('.track-row[data-id]').forEach(row => {
+    row.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      _showContextMenu(e.clientX, e.clientY, row.dataset.kind, parseInt(row.dataset.id, 10));
+    });
   });
 
   // ── Tag actions (M2) ──────────────────────────────────────────
@@ -2123,6 +2137,73 @@ function bindGlobalKeys() {
         break;
     }
   });
+}
+
+// ── Context menu ─────────────────────────────────────────────────
+function _showContextMenu(x, y, kind, id) {
+  _closeContextMenu();
+  const menu = document.createElement('div');
+  menu.className = 'ctx-menu';
+  menu.innerHTML = `
+    <div class="ctx-item" data-ctx="play">▶ 播放</div>
+    <div class="ctx-item" data-ctx="queue">📜 加入队列</div>
+    <div class="ctx-divider"></div>
+    <div class="ctx-item" data-ctx="playlist">➕ 加入歌单</div>
+    <div class="ctx-item" data-ctx="tag">🏷 标签</div>
+    ${kind === 'online' ? '<div class="ctx-divider"></div><div class="ctx-item danger" data-ctx="delete">🗑 删除</div>' : ''}
+  `;
+  // Position: keep within viewport
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  menu.style.left = Math.min(x, window.innerWidth - rect.width - 8) + 'px';
+  menu.style.top = Math.min(y, window.innerHeight - rect.height - 8) + 'px';
+
+  menu.addEventListener('click', async (e) => {
+    const act = e.target.closest('[data-ctx]')?.dataset.ctx;
+    if (!act) return;
+    _closeContextMenu();
+    const pool = kind === 'local' ? state.localTracks : state.onlineTracks;
+    const track = pool.find(t => t.id === id);
+    if (!track) return;
+    switch (act) {
+      case 'play':
+        player.playTrack({ ...track, kind, id }, [{ ...track, kind, id }], 0);
+        break;
+      case 'queue':
+        player.queue.push({ ...track, kind, id });
+        showToast('已加入队列');
+        break;
+      case 'playlist': {
+        if (!state.playlists.length) { showToast('请先创建歌单', 'error'); return; }
+        const list = state.playlists.map((p, i) => `${i+1}. ${p.name}`).join('\n');
+        const ch = prompt(`加入哪个歌单？\n${list}`, '1');
+        const idx = parseInt(ch, 10) - 1;
+        if (!isNaN(idx) && state.playlists[idx]) {
+          await api.post(`/playlists/${state.playlists[idx].id}/items`, { track_kind: kind, track_id: id });
+          state.playlists = await api.get('/playlists');
+          showToast('已加入歌单');
+        }
+        break;
+      }
+      case 'tag': {
+        // Simulate clicking the tag button on this row
+        const btn = document.querySelector(`.track-row[data-kind="${kind}"][data-id="${id}"] [data-act="open-tagger"]`);
+        if (btn) btn.click();
+        break;
+      }
+      case 'delete':
+        if (!confirm('确定删除？')) return;
+        await api.del(`/online/tracks/${id}`);
+        state.onlineTracks = await api.get('/online/tracks');
+        render();
+        break;
+    }
+  });
+  // Close on click outside
+  setTimeout(() => document.addEventListener('click', _closeContextMenu, { once: true }), 0);
+}
+function _closeContextMenu() {
+  document.querySelectorAll('.ctx-menu').forEach(m => m.remove());
 }
 
 // ── Boot ──────────────────────────────────────────────────────────

@@ -1,0 +1,21 @@
+{
+  "name": "落音 LoyinMusic",
+  "short_name": "落音",
+  "description": "Web 音乐播放器 — 本地音乐 + 在线音源",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0a14",
+  "theme_color": "#0a0a14",
+  "icons": [
+    {
+      "src": "/static/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/static/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
