@@ -1198,7 +1198,9 @@ function renderOnlineView() {
   return html;
 }
 
-// Search results render with a 收藏(save) action (results aren't in DB yet)
+// Search results render with 收藏 + 下载 actions (results aren't in DB yet).
+// Each result's data is embedded as JSON in data-track to avoid index mismatch
+// when platform filter is active.
 function renderSearchResults(results) {
   let html = `<table class="track-table"><thead><tr>
     <th class="td-idx">#</th><th class="td-cover"></th>
@@ -1208,15 +1210,24 @@ function renderSearchResults(results) {
   </tr></thead><tbody>`;
   results.forEach((t, i) => {
     const cv = t.cover_url || '';
+    // Embed minimal track data for save/download (avoids index issues with filtering)
+    const trackData = esc(JSON.stringify({
+      source: t.source, source_id: t.source_id, title: t.title, artist: t.artist,
+      album: t.album, duration_ms: t.duration_ms, cover_url: t.cover_url,
+      source_meta: t.source_meta, url_cache: t.url_cache || '',
+    }));
     html += `<tr class="track-row" data-search-idx="${i}">
       <td class="td-idx">${i + 1}</td>
       <td class="td-cover">${cv ? `<img src="${esc(cv)}" loading="lazy">` : '<div style="width:28px;height:28px;border-radius:4px;background:var(--item-glass)"></div>'}</td>
-      <td class="td-title"><span class="track-name">${esc(t.title || '')}</span>${t.is_preview ? ' <span class="kind-badge online">试听</span>' : ''}</td>
+      <td class="td-title"><span class="track-name">${esc(t.title || '')}</span></td>
       <td class="td-artist">${esc(t.artist || '')}</td>
       <td class="td-album">${esc(t.album || '')}</td>
       <td class="td-kind">${esc(t.source || '')}</td>
       <td class="td-duration">${fmtTime(t.duration_ms)}</td>
-      <td class="td-actions"><button class="btn-tag-action" data-act="save-result" data-search-idx="${i}" title="收藏">⭐</button></td>
+      <td class="td-actions">
+        <button class="btn-tag-action" data-act="save-result" data-track="${trackData}" title="收藏">⭐</button>
+        <button class="btn-tag-action" data-act="dl-result" data-track="${trackData}" title="下载">⬇</button>
+      </td>
     </tr>`;
   });
   html += '</tbody></table>';
@@ -1903,16 +1914,27 @@ function bindViewEvents() {
     };
   });
 
-  // Search-result row click → play preview/resolved url directly.
-  // Builds a queue from all result rows so next/prev walks the results.
-  document.querySelectorAll('.track-row[data-search-idx]').forEach(row => {
-    row.onclick = (e) => {
-      if (e.target.closest('[data-act]')) return;
-      const idx = parseInt(row.dataset.searchIdx, 10);
-      const queue = state.onlineSearchResults.map((t, i) => ({ ...t, kind: 'online', id: t.id || `search-${i}` }));
-      if (queue[idx]) player.playTrack(queue[idx], queue, idx);
-    };
-  });
+  // Search-result row click → play. Build queue from visible rows' embedded data.
+  const searchRows = document.querySelectorAll('.track-row[data-search-idx]');
+  if (searchRows.length) {
+    // Build queue once from all visible search result rows
+    const searchQueue = [];
+    searchRows.forEach((row, i) => {
+      const btn = row.querySelector('[data-track]');
+      if (btn) {
+        try {
+          const t = JSON.parse(btn.dataset.track);
+          searchQueue.push({ ...t, kind: 'online', id: t.source_id || `search-${i}` });
+        } catch {}
+      }
+    });
+    searchRows.forEach((row, i) => {
+      row.onclick = (e) => {
+        if (e.target.closest('[data-act]')) return;
+        if (searchQueue[i]) player.playTrack(searchQueue[i], searchQueue, i);
+      };
+    });
+  }
 
   // ── Right-click context menu ────────────────────────────────
   document.querySelectorAll('.track-row[data-id]').forEach(row => {
@@ -2194,17 +2216,39 @@ function bindViewEvents() {
   document.querySelectorAll('[data-act="save-result"]').forEach(btn => {
     btn.onclick = async (e) => {
       e.stopPropagation();
-      const t = state.onlineSearchResults[parseInt(btn.dataset.searchIdx, 10)];
-      if (!t) return;
-      // source_meta from backend is already a JSON string; backend handles both
-      await api.post('/online/tracks', {
-        source: t.source, source_id: t.source_id, title: t.title, artist: t.artist,
-        album: t.album, duration_ms: t.duration_ms, cover_url: t.cover_url,
-        url: t.url_cache || '', source_meta: t.source_meta,
-        default_quality: '320k',
-      });
-      state.onlineTracks = await api.get('/online/tracks');
-      btn.textContent = '✓';
+      try {
+        const t = JSON.parse(btn.dataset.track);
+        await api.post('/online/tracks', {
+          source: t.source, source_id: t.source_id, title: t.title, artist: t.artist,
+          album: t.album, duration_ms: t.duration_ms, cover_url: t.cover_url,
+          url: t.url_cache || '', source_meta: t.source_meta,
+          default_quality: '320k',
+        });
+        state.onlineTracks = await api.get('/online/tracks');
+        btn.textContent = '✓';
+        showToast(`已收藏「${t.title}」`);
+      } catch { showToast('收藏失败', 'error'); }
+    };
+  });
+
+  // Download a search result (⬇)
+  document.querySelectorAll('[data-act="dl-result"]').forEach(btn => {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      try {
+        const t = JSON.parse(btn.dataset.track);
+        const meta = t.source_meta ? JSON.parse(t.source_meta) : {};
+        const songmid = meta.songmid || t.source_id;
+        showToast('正在获取下载链接...');
+        const r = await api.get(`/online/resolve?source=${t.source}&songmid=${encodeURIComponent(songmid)}&quality=${state.settings.default_quality_online || '320k'}`);
+        if (r.url) {
+          const a = document.createElement('a');
+          a.href = `/api/online/stream?url=${encodeURIComponent(r.url)}`;
+          a.download = `${t.artist || 'Unknown'} - ${t.title || 'Unknown'}.mp3`;
+          a.click();
+          showToast('开始下载');
+        } else { showToast('无法获取下载链接', 'error'); }
+      } catch { showToast('下载失败', 'error'); }
     };
   });
 
