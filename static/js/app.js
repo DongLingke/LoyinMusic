@@ -1701,31 +1701,29 @@ function renderSettingsView() {
     </div>
   </details>`;
 
-  // Platform login (QQ音乐 / 酷狗)
+  // Platform login
   html += `<details class="settings-section">
     <summary class="settings-section-title">平台登录</summary>
     <div class="settings-group">
-      <div class="settings-row" style="flex-direction:column;align-items:stretch;gap:6px">
-        <div><div class="settings-row-label">QQ 音乐 Cookie</div>
-          <div class="settings-row-sub">登录 y.qq.com 后，从浏览器开发者工具复制 Cookie</div></div>
-        <div style="display:flex;gap:6px">
-          <input type="text" class="settings-input" id="input-tx-cookie"
-            placeholder="粘贴 Cookie..." value="${esc(s.tx_cookie || '')}"
-            style="flex:1;font-size:0.75rem;padding:6px 8px;border-radius:6px;border:1px solid var(--divider);background:var(--item-glass);color:var(--text-primary)">
-          <button class="btn btn-primary" id="btn-save-tx-cookie" style="flex-shrink:0">保存</button>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">QQ 音乐</div>
+          <div class="settings-row-sub">${s.tx_cookie ? '✓ 已登录' : '未登录 — 用 QQ 或微信扫码登录'}</div>
         </div>
-        <div class="settings-row-sub">${s.tx_cookie ? '✓ 已设置' : '未登录 — QQ 音乐播放受限'}</div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-primary" id="btn-qq-login">扫码登录</button>
+          ${s.tx_cookie ? '<button class="btn btn-ghost" style="color:var(--danger)" id="btn-qq-logout">退出</button>' : ''}
+        </div>
       </div>
-      <div class="settings-row" style="flex-direction:column;align-items:stretch;gap:6px">
-        <div><div class="settings-row-label">酷狗 Cookie</div>
-          <div class="settings-row-sub">登录 kugou.com 后，从浏览器开发者工具复制 Cookie</div></div>
-        <div style="display:flex;gap:6px">
-          <input type="text" class="settings-input" id="input-kg-cookie"
-            placeholder="粘贴 Cookie..." value="${esc(s.kg_cookie || '')}"
-            style="flex:1;font-size:0.75rem;padding:6px 8px;border-radius:6px;border:1px solid var(--divider);background:var(--item-glass);color:var(--text-primary)">
-          <button class="btn btn-primary" id="btn-save-kg-cookie" style="flex-shrink:0">保存</button>
+      <div class="settings-row">
+        <div>
+          <div class="settings-row-label">酷狗音乐</div>
+          <div class="settings-row-sub">${s.kg_cookie ? '✓ 已登录' : '未登录 — 手动粘贴 Cookie'}</div>
         </div>
-        <div class="settings-row-sub">${s.kg_cookie ? '✓ 已设置' : '未登录 — 酷狗播放受限'}</div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-ghost" id="btn-kg-cookie-paste">粘贴 Cookie</button>
+          ${s.kg_cookie ? '<button class="btn btn-ghost" style="color:var(--danger)" id="btn-kg-logout">退出</button>' : ''}
+        </div>
       </div>
     </div>
   </details>`;
@@ -2573,19 +2571,69 @@ function bindViewEvents() {
     });
   });
 
-  // ── Platform login (QQ / 酷狗 cookie) ─────────────────────────
-  document.getElementById('btn-save-tx-cookie')?.addEventListener('click', async () => {
-    const val = document.getElementById('input-tx-cookie')?.value || '';
-    await api.put('/settings', { tx_cookie: val.trim() });
-    state.settings.tx_cookie = val.trim();
-    showToast(val.trim() ? 'QQ 音乐 Cookie 已保存' : 'QQ 音乐 Cookie 已清除');
+  // ── QQ Music QR login ──────────────────────────────────────────
+  document.getElementById('btn-qq-login')?.addEventListener('click', async () => {
+    showToast('正在生成二维码...');
+    try {
+      const d = await api.get('/auth/qq/qr');
+      if (d.error) { showToast('生成二维码失败', 'error'); return; }
+      // Show QR modal
+      let overlay = document.createElement('div');
+      overlay.className = 'global-search-overlay';
+      overlay.innerHTML = `
+        <div class="global-search-box" style="text-align:center;padding:24px">
+          <div style="font-size:1.1rem;font-weight:600;margin-bottom:12px">QQ 音乐扫码登录</div>
+          <img src="data:image/png;base64,${d.qr_base64}" style="width:200px;height:200px;border-radius:8px;background:#fff;padding:8px">
+          <div id="qr-status" style="margin-top:12px;color:var(--text-secondary);font-size:0.85rem">请用 QQ 或微信扫描二维码</div>
+          <button class="btn btn-ghost" id="qr-cancel" style="margin-top:12px">取消</button>
+        </div>`;
+      document.body.appendChild(overlay);
+      document.getElementById('qr-cancel').onclick = () => { clearInterval(poll); overlay.remove(); };
+      overlay.onclick = (e) => { if (e.target === overlay) { clearInterval(poll); overlay.remove(); } };
+      // Poll login status
+      const poll = setInterval(async () => {
+        try {
+          const s = await api.get(`/auth/qq/poll?key=${d.key}`);
+          const statusEl = document.getElementById('qr-status');
+          if (!statusEl) { clearInterval(poll); return; }
+          if (s.status === 'scanned') statusEl.textContent = '已扫描，请在手机上确认...';
+          else if (s.status === 'confirming') statusEl.textContent = '确认中...';
+          else if (s.status === 'success') {
+            clearInterval(poll);
+            overlay.remove();
+            state.settings.tx_cookie = 'logged_in';
+            state.settings = await api.get('/settings');
+            showToast(`QQ 音乐登录成功${s.nickname ? ' — ' + s.nickname : ''}`);
+            render();
+          } else if (s.status === 'expired') {
+            clearInterval(poll);
+            statusEl.innerHTML = '二维码已过期 <button class="btn btn-ghost" onclick="this.closest(\'.global-search-overlay\').remove()">关闭</button>';
+          }
+        } catch {}
+      }, 2000);
+    } catch { showToast('登录失败', 'error'); }
+  });
+
+  document.getElementById('btn-qq-logout')?.addEventListener('click', async () => {
+    await api.put('/settings', { tx_cookie: '' });
+    state.settings.tx_cookie = '';
+    showToast('QQ 音乐已退出');
     render();
   });
-  document.getElementById('btn-save-kg-cookie')?.addEventListener('click', async () => {
-    const val = document.getElementById('input-kg-cookie')?.value || '';
+
+  // ── 酷狗 Cookie paste ────────────────────────────────────────
+  document.getElementById('btn-kg-cookie-paste')?.addEventListener('click', async () => {
+    const val = prompt('粘贴酷狗 Cookie\n（登录 kugou.com 后，F12 → Network → 复制请求头的 Cookie）');
+    if (val === null) return;
     await api.put('/settings', { kg_cookie: val.trim() });
     state.settings.kg_cookie = val.trim();
     showToast(val.trim() ? '酷狗 Cookie 已保存' : '酷狗 Cookie 已清除');
+    render();
+  });
+  document.getElementById('btn-kg-logout')?.addEventListener('click', async () => {
+    await api.put('/settings', { kg_cookie: '' });
+    state.settings.kg_cookie = '';
+    showToast('酷狗已退出');
     render();
   });
 

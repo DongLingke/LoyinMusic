@@ -1414,6 +1414,98 @@ def get_lyrics():
         return jsonify({'lrc': '', 'tlyric': ''})
 
 
+# ---------------------------------------------------------------------------
+# QR Code Login — QQ Music (扫码登录)
+# ---------------------------------------------------------------------------
+# Flow: get QR image → user scans with QQ/微信 → poll status → get cookies
+# ---------------------------------------------------------------------------
+_qq_login_sessions = {}  # key → {session, qrsig, ptqrtoken, status}
+
+
+def _qq_hash33(s):
+    """QQ's ptqrtoken hash function."""
+    h = 0
+    for c in s:
+        h += (h << 5) + ord(c)
+    return h & 0x7fffffff
+
+
+@app.route('/api/auth/qq/qr')
+def qq_qr_code():
+    """Generate a QQ login QR code. Returns {key, qr_base64}."""
+    import base64, uuid
+    sess = req_lib.Session()
+    r = sess.get('https://ssl.ptlogin2.qq.com/ptqrshow', params={
+        'appid': '716027609', 'e': '2', 'l': 'M', 's': '3', 'd': '72',
+        'v': '4', 't': str(time.time()), 'daid': '383', 'pt_3rd_aid': '100497308',
+    }, timeout=10)
+    qrsig = sess.cookies.get('qrsig', '')
+    if not qrsig:
+        return jsonify({'error': 'failed to get qrsig'}), 500
+    key = str(uuid.uuid4())[:8]
+    _qq_login_sessions[key] = {
+        'session': sess, 'qrsig': qrsig,
+        'ptqrtoken': _qq_hash33(qrsig), 'status': 'waiting',
+    }
+    qr_b64 = base64.b64encode(r.content).decode()
+    return jsonify({'key': key, 'qr_base64': qr_b64})
+
+
+@app.route('/api/auth/qq/poll')
+def qq_poll_login():
+    """Poll QQ login status. Returns {status, nickname?}."""
+    import re
+    key = request.args.get('key', '')
+    entry = _qq_login_sessions.get(key)
+    if not entry:
+        return jsonify({'status': 'expired'})
+    sess = entry['session']
+    try:
+        r = sess.get('https://ssl.ptlogin2.qq.com/ptqrlogin', params={
+            'u1': 'https://y.qq.com', 'ptqrtoken': str(entry['ptqrtoken']),
+            'ptredirect': '0', 'h': '1', 't': '1', 'g': '1',
+            'from_ui': '1', 'ptlang': '2052',
+            'action': f'0-0-{int(time.time()*1000)}',
+            'js_ver': '22071817', 'js_type': '1',
+            'pt_uistyle': '40', 'aid': '716027609', 'daid': '383',
+        }, timeout=10)
+        text = r.text
+        # Parse ptuiCB('code', ...)
+        m = re.search(r"ptuiCB\('(\d+)'", text)
+        code = m.group(1) if m else '99'
+        if code == '0':
+            # Login success — extract redirect URL and follow it
+            urls = re.findall(r"'(https?://[^']+)'", text)
+            redirect_url = urls[0] if urls else ''
+            nickname_m = re.findall(r"'([^']*)'", text)
+            nickname = nickname_m[-1] if len(nickname_m) >= 6 else ''
+            if redirect_url:
+                sess.get(redirect_url, allow_redirects=True, timeout=10)
+            # Visit y.qq.com to get music cookies
+            sess.get('https://y.qq.com/', headers={'Referer': 'https://y.qq.com/'}, timeout=10)
+            # Collect all cookies as a string
+            cookie_str = '; '.join(f'{c.name}={c.value}' for c in sess.cookies)
+            # Save to settings
+            conn = get_db()
+            conn.execute("INSERT OR REPLACE INTO settings (key,value) VALUES ('tx_cookie',?)",
+                         (cookie_str,))
+            conn.commit()
+            conn.close()
+            del _qq_login_sessions[key]
+            return jsonify({'status': 'success', 'nickname': nickname})
+        elif code == '66':
+            return jsonify({'status': 'scanned'})
+        elif code == '67':
+            return jsonify({'status': 'confirming'})
+        elif code == '65':
+            del _qq_login_sessions[key]
+            return jsonify({'status': 'expired'})
+        else:
+            return jsonify({'status': 'waiting'})
+    except Exception as e:
+        return jsonify({'status': 'error', 'msg': str(e)})
+
+
 @app.route('/api/online/stream')
 def stream_online():
     """Proxy-stream a remote audio URL through the server.
