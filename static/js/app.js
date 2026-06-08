@@ -1207,10 +1207,10 @@ function renderOnlineView() {
   return html;
 }
 
-// Search results render with 收藏 + 下载 actions (results aren't in DB yet).
-// Each result's data is embedded as JSON in data-track to avoid index mismatch
-// when platform filter is active.
+// Search results render. The current visible results are stored in
+// state._visibleSearchResults so handlers can look up by index reliably.
 function renderSearchResults(results) {
+  state._visibleSearchResults = results;  // store reference for handlers
   let html = `<table class="track-table"><thead><tr>
     <th class="td-idx">#</th><th class="td-cover"></th>
     <th class="td-title">标题</th><th class="td-artist">艺人</th>
@@ -1219,13 +1219,7 @@ function renderSearchResults(results) {
   </tr></thead><tbody>`;
   results.forEach((t, i) => {
     const cv = t.cover_url || '';
-    // Embed minimal track data for save/download (avoids index issues with filtering)
-    const trackData = esc(JSON.stringify({
-      source: t.source, source_id: t.source_id, title: t.title, artist: t.artist,
-      album: t.album, duration_ms: t.duration_ms, cover_url: t.cover_url,
-      source_meta: t.source_meta, url_cache: t.url_cache || '',
-    }));
-    html += `<tr class="track-row" data-search-idx="${i}">
+    html += `<tr class="track-row search-row" data-ridx="${i}">
       <td class="td-idx">${i + 1}</td>
       <td class="td-cover">${cv ? `<img src="${esc(cv)}" loading="lazy">` : '<div style="width:28px;height:28px;border-radius:4px;background:var(--item-glass)"></div>'}</td>
       <td class="td-title"><span class="track-name">${esc(t.title || '')}</span></td>
@@ -1234,8 +1228,8 @@ function renderSearchResults(results) {
       <td class="td-kind">${esc(t.source || '')}</td>
       <td class="td-duration">${fmtTime(t.duration_ms)}</td>
       <td class="td-actions">
-        <button class="btn-tag-action" data-act="save-result" data-track="${trackData}" title="收藏">⭐</button>
-        <button class="btn-tag-action" data-act="dl-result" data-track="${trackData}" title="下载">⬇</button>
+        <button class="btn-tag-action" data-act="save-sr" data-ridx="${i}" title="收藏">⭐</button>
+        <button class="btn-tag-action" data-act="dl-sr" data-ridx="${i}" title="下载">⬇</button>
       </td>
     </tr>`;
   });
@@ -1921,27 +1915,17 @@ function bindViewEvents() {
     };
   });
 
-  // Search-result row click → play. Build queue from visible rows' embedded data.
-  const searchRows = document.querySelectorAll('.track-row[data-search-idx]');
-  if (searchRows.length) {
-    // Build queue once from all visible search result rows
-    const searchQueue = [];
-    searchRows.forEach((row, i) => {
-      const btn = row.querySelector('[data-track]');
-      if (btn) {
-        try {
-          const t = JSON.parse(btn.dataset.track);
-          searchQueue.push({ ...t, kind: 'online', id: t.source_id || `search-${i}` });
-        } catch {}
-      }
-    });
-    searchRows.forEach((row, i) => {
-      row.onclick = (e) => {
-        if (e.target.closest('[data-act]')) return;
-        if (searchQueue[i]) player.playTrack(searchQueue[i], searchQueue, i);
-      };
-    });
-  }
+  // Search-result row click → play
+  document.querySelectorAll('.search-row[data-ridx]').forEach(row => {
+    row.onclick = (e) => {
+      if (e.target.closest('[data-act]')) return;
+      const idx = parseInt(row.dataset.ridx, 10);
+      const vis = state._visibleSearchResults || [];
+      if (!vis[idx]) return;
+      const queue = vis.map((t, i) => ({ ...t, kind: 'online', id: t.source_id || `sr-${i}` }));
+      player.playTrack(queue[idx], queue, idx);
+    };
+  });
 
   // ── Right-click context menu ────────────────────────────────
   document.querySelectorAll('.track-row[data-id]').forEach(row => {
@@ -2220,11 +2204,12 @@ function bindViewEvents() {
   });
 
   // Save a search result into the online library (⭐)
-  document.querySelectorAll('[data-act="save-result"]').forEach(btn => {
+  document.querySelectorAll('[data-act="save-sr"]').forEach(btn => {
     btn.onclick = async (e) => {
       e.stopPropagation();
+      const t = (state._visibleSearchResults || [])[parseInt(btn.dataset.ridx, 10)];
+      if (!t) return;
       try {
-        const t = JSON.parse(btn.dataset.track);
         await api.post('/online/tracks', {
           source: t.source, source_id: t.source_id, title: t.title, artist: t.artist,
           album: t.album, duration_ms: t.duration_ms, cover_url: t.cover_url,
@@ -2239,14 +2224,15 @@ function bindViewEvents() {
   });
 
   // Download a search result (⬇)
-  document.querySelectorAll('[data-act="dl-result"]').forEach(btn => {
+  document.querySelectorAll('[data-act="dl-sr"]').forEach(btn => {
     btn.onclick = async (e) => {
       e.stopPropagation();
+      const t = (state._visibleSearchResults || [])[parseInt(btn.dataset.ridx, 10)];
+      if (!t) return;
+      const meta = t.source_meta ? JSON.parse(t.source_meta) : {};
+      const songmid = meta.songmid || t.source_id;
+      showToast('正在获取下载链接...');
       try {
-        const t = JSON.parse(btn.dataset.track);
-        const meta = t.source_meta ? JSON.parse(t.source_meta) : {};
-        const songmid = meta.songmid || t.source_id;
-        showToast('正在获取下载链接...');
         const r = await api.get(`/online/resolve?source=${t.source}&songmid=${encodeURIComponent(songmid)}&quality=${state.settings.default_quality_online || '320k'}`);
         if (r.url) {
           const a = document.createElement('a');
