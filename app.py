@@ -996,8 +996,10 @@ def _search_kw(keyword, limit=30):
         headers={'User-Agent': _SEARCH_UA},
         timeout=10,
     )
-    # Response uses single-quoted pseudo-JSON with HTML entities
+    # Response uses single-quoted pseudo-JSON with HTML entities + control chars
+    import re as _re
     text = resp.text.replace("'", '"').replace('&nbsp;', ' ')
+    text = _re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)  # strip control chars
     data = json.loads(text)
     out = []
     for item in data.get('abslist', []):
@@ -1193,30 +1195,30 @@ def online_search():
 # ---------------------------------------------------------------------------
 
 def _resolve_wy(songmid, quality):
-    """网易云 — public outer URL (works for non-VIP tracks)."""
-    # Try the direct outer URL (302 redirect to CDN)
-    r = req_lib.get(
-        f'https://music.163.com/song/media/outer/url?id={songmid}.mp3',
-        headers={'User-Agent': _SEARCH_UA, 'Referer': 'https://music.163.com'},
-        allow_redirects=False, timeout=8,
-    )
-    if r.status_code in (301, 302) and r.headers.get('Location'):
-        loc = r.headers['Location']
-        if 'error' not in loc and loc.startswith('http'):
-            return loc
-    # Fallback: try the enhanced API
-    br = '999000' if quality in ('flac', 'flac24bit') else ('320000' if quality == '320k' else '128000')
-    r2 = req_lib.post(
-        'https://music.163.com/api/song/enhance/player/url',
-        data={'ids': f'[{songmid}]', 'br': br},
-        headers={'User-Agent': _SEARCH_UA, 'Referer': 'https://music.163.com',
-                 'Content-Type': 'application/x-www-form-urlencoded'},
-        timeout=8,
-    )
-    data = r2.json()
-    for item in data.get('data', []):
-        if item.get('url') and item.get('code') == 200:
-            return item['url']
+    """网易云 — enhance/player/url API with quality fallback."""
+    # Map quality to bitrate
+    br_map = {'flac': '999000', 'flac24bit': '999000', '320k': '320000', '128k': '128000'}
+    # Try requested quality, then fall down
+    brs = [br_map.get(quality, '320000')]
+    if '320000' not in brs:
+        brs.append('320000')
+    if '128000' not in brs:
+        brs.append('128000')
+    for br in brs:
+        try:
+            r = req_lib.post(
+                'https://music.163.com/api/song/enhance/player/url',
+                data={'ids': f'[{songmid}]', 'br': br},
+                headers={'User-Agent': _SEARCH_UA, 'Referer': 'https://music.163.com',
+                         'Content-Type': 'application/x-www-form-urlencoded'},
+                timeout=8,
+            )
+            data = r.json()
+            for item in data.get('data', []):
+                if item.get('url') and item.get('code') == 200:
+                    return item['url']
+        except Exception:
+            pass
     return None
 
 
