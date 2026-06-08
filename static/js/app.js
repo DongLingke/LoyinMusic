@@ -295,6 +295,7 @@ const player = {
 
   init() {
     this.audio = document.getElementById('audio-el');
+    this.audio.crossOrigin = 'anonymous';  // Required for Web Audio + CORS
     this.audio.addEventListener('ended', () => this._onEnded());
     this.audio.addEventListener('timeupdate', () => this._onTimeUpdate());
     this.audio.addEventListener('play', () => { this.playing = true; this._updatePlayBtn(); this._startVisualizer(); });
@@ -472,6 +473,10 @@ const player = {
         }
       }
       if (!url) url = track.url_cache || track.path || '';
+      // Ensure external URLs go through our stream proxy (CORS + Web Audio)
+      if (url && url.startsWith('http') && !url.startsWith('/')) {
+        url = `/api/online/stream?url=${encodeURIComponent(url)}`;
+      }
     }
     if (!url) {
       // Don't show redundant toast if we already showed one above
@@ -492,6 +497,7 @@ const player = {
       return;
     }
     this._resolveFailCount = 0;  // reset on success
+    console.log('[play]', track.title, '→', url.slice(0, 100));
     this.audio.src = url;
     this.audio.play();
     this._startTime = Date.now();
@@ -649,7 +655,10 @@ const player = {
       this._updateBar(track);
       this._updateMediaSession(track);
       // Prime the audio src + seek position, but stay paused
-      const url = track.kind === 'local' ? `/api/local/stream/${track.id}` : (track.url_cache || '');
+      let url = track.kind === 'local' ? `/api/local/stream/${track.id}` : (track.url_cache || '');
+      if (url && url.startsWith('http') && !url.startsWith('/')) {
+        url = `/api/online/stream?url=${encodeURIComponent(url)}`;
+      }
       if (url) {
         this.audio.src = url;
         this.audio.addEventListener('loadedmetadata', () => {
